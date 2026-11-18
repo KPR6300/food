@@ -91,6 +91,7 @@
         <section class="settings-card" aria-labelledby="menu-settings-title">
           <h2 id="menu-settings-title">Menu availability</h2>
           <p>Tick an item to mark it available. Unticked dishes appear as unavailable and can’t be ordered.</p>
+          <p class="notice" id="payment-config-warning" role="status" hidden></p>
           <div class="menu-toggles" id="menu-items"></div>
         </section>
       </div>
@@ -267,6 +268,11 @@
 
     async function loadMenu() {
       const data = await api("/api/menu");
+      const paymentWarning = document.getElementById("payment-config-warning");
+      paymentWarning.hidden = Boolean(data.upiPayment);
+      paymentWarning.textContent = data.upiPayment
+        ? ""
+        : "Checkout is disabled. Set UPI_ID and UPI_PAYEE_NAME in the hosting service environment, then redeploy.";
       menuContainer.replaceChildren();
       for (const item of data.items) {
         const label = document.createElement("label");

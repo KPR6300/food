@@ -29,7 +29,7 @@ Orders and menu availability are saved under `data/`. Keep this directory on per
 
 ## Deploy
 
-Deploy this folder to a Node.js host that supports persistent storage. Configure `ADMIN_PASSWORD` (at least 12 characters), `UPI_ID`, `UPI_PAYEE_NAME`, `NODE_ENV=production`, and the port supplied by the host. If the host's default disk is temporary, set `ORDERS_FILE` to a persistent disk location. Use HTTPS in production. The owner dashboard signs out when the server restarts.
+Deploy this folder to a Node.js host that supports persistent storage. On Render, add `ADMIN_PASSWORD` (at least 12 characters), `UPI_ID`, `UPI_PAYEE_NAME`, and `NODE_ENV=production` under the service's **Environment** settings, then redeploy. `UPI_ID` must be a valid UPI address and both UPI settings are required to enable checkout. Sign in to `/admin` after deploying and mark at least one menu item available; on a fresh instance, all dishes start unavailable. If the host's default disk is temporary, set `ORDERS_FILE` to a persistent disk location. Use HTTPS in production. The owner dashboard signs out when the server restarts.
 
 UPI app payments are the only payment option. Update the sample menu, address, and delivery areas in `index.html` before going live.
 

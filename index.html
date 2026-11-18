@@ -783,7 +783,7 @@
       checkoutButton.style.opacity = checkoutReady ? "1" : ".55";
       checkoutButton.hidden = !document.getElementById("checkout-form").hidden;
       document.querySelector(".checkout-note").textContent = !paymentAvailable
-        ? "UPI payments are not ready yet. Please try again later."
+        ? "UPI checkout is disabled. The owner must set UPI_ID and UPI_PAYEE_NAME in the hosting service settings."
         : !cartAvailable
           ? "Remove unavailable items from your bag before continuing."
           : "Enter your delivery details, pay with UPI, then enter the transaction reference.";
