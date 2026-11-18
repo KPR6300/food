@@ -40,27 +40,6 @@ function normalizePhone(phone) {
   return phone.replace(/\D/g, "");
 }
 
-function validatePaymentQr(contentType, encoded) {
-  const allowedTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
-  if (!allowedTypes.has(contentType) || typeof encoded !== "string" ||
-      encoded.length > 2_100_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
-    return { error: "Upload a PNG, JPEG, or WebP QR image no larger than 1.5 MB." };
-  }
-  const image = Buffer.from(encoded, "base64");
-  if (image.length < 16 || image.length > 1_500_000 ||
-      image.toString("base64").replace(/=+$/, "") !== encoded.replace(/=+$/, "")) {
-    return { error: "The QR image is invalid or larger than 1.5 MB." };
-  }
-  const isPng = contentType === "image/png" &&
-    image.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-  const isJpeg = contentType === "image/jpeg" &&
-    image[0] === 255 && image[1] === 216 && image[2] === 255;
-  const isWebp = contentType === "image/webp" &&
-    image.toString("ascii", 0, 4) === "RIFF" && image.toString("ascii", 8, 12) === "WEBP";
-  if (!isPng && !isJpeg && !isWebp) return { error: "The uploaded file doesn't match its image type." };
-  return { qr: { contentType, encoded } };
-}
-
 function safeEqual(left, right) {
   const leftHash = crypto.createHash("sha256").update(left).digest();
   const rightHash = crypto.createHash("sha256").update(right).digest();
@@ -171,7 +150,6 @@ function createApp({
   upiPayeeName,
   ordersFile = path.join(ROOT, "data", "orders.json"),
   availabilityFile = path.join(path.dirname(ordersFile), "menu-availability.json"),
-  paymentQrFile = path.join(path.dirname(ordersFile), "payment-qr.json"),
   secureCookies = false
 } = {}) {
   if (typeof adminPassword !== "string" || adminPassword.length < 12) {
@@ -189,7 +167,6 @@ function createApp({
 
   let orders;
   let availability;
-  let paymentQr = null;
   let mutationQueue = Promise.resolve();
   let settingsMutationQueue = Promise.resolve();
   const sessions = new Map();
@@ -227,21 +204,9 @@ function createApp({
       availability = Object.fromEntries(Object.keys(MENU).map((id) => [id, false]));
     });
 
-  const paymentQrReady = fs.readFile(paymentQrFile, "utf8")
-    .then((contents) => {
-      const saved = JSON.parse(contents);
-      const validated = validatePaymentQr(saved.contentType, saved.encoded);
-      if (validated.error) throw new Error(`Saved payment QR is invalid: ${validated.error}`);
-      paymentQr = validated.qr;
-    })
-    .catch((error) => {
-      if (error.code !== "ENOENT") throw error;
-      paymentQr = null;
-    });
-
   function mutateSettings(mutation) {
     const operation = settingsMutationQueue.then(async () => {
-      await Promise.all([availabilityReady, paymentQrReady]);
+      await availabilityReady;
       return mutation();
     });
     settingsMutationQueue = operation.then(() => undefined, () => undefined);
@@ -277,11 +242,6 @@ function createApp({
     return true;
   }
 
-  function paymentQrVersion() {
-    if (!paymentQr) return null;
-    return crypto.createHash("sha256").update(paymentQr.encoded).digest("hex").slice(0, 12);
-  }
-
   return http.createServer(async (request, response) => {
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -295,7 +255,7 @@ function createApp({
       }
 
       if (request.method === "GET" && url.pathname === "/api/menu") {
-        await Promise.all([availabilityReady, paymentQrReady]);
+        await availabilityReady;
         const items = Object.entries(MENU).map(([id, item]) => ({
           id,
           ...item,
@@ -303,27 +263,14 @@ function createApp({
         }));
         return sendJson(response, 200, {
           items,
-          paymentQrAvailable: paymentQr !== null,
-          paymentQrVersion: paymentQrVersion(),
           upiPayment
         });
       }
 
-      if (request.method === "GET" && url.pathname === "/api/payment-qr") {
-        await paymentQrReady;
-        if (!paymentQr) return sendJson(response, 404, { error: "UPI QR code is not configured." });
-        response.writeHead(200, {
-          "Content-Type": paymentQr.contentType,
-          "Cache-Control": "no-store",
-          "X-Content-Type-Options": "nosniff"
-        });
-        return response.end(Buffer.from(paymentQr.encoded, "base64"));
-      }
-
       if (request.method === "POST" && url.pathname === "/api/orders") {
-        await Promise.all([availabilityReady, paymentQrReady]);
+        await availabilityReady;
         const body = await readJsonBody(request);
-        const validated = validateOrder(body, availability, paymentQr !== null || upiPayment !== null);
+        const validated = validateOrder(body, availability, upiPayment !== null);
         if (validated.error) return sendJson(response, 400, { error: validated.error });
         const order = await mutateOrders((savedOrders) => {
           savedOrders.unshift(validated.order);
@@ -452,17 +399,6 @@ function createApp({
           return { id, available: next[id] };
         });
         return sendJson(response, 200, { item });
-      }
-
-      if (request.method === "PUT" && url.pathname === "/api/admin/payment-qr") {
-        const body = await readJsonBody(request, 2_200_000);
-        const validated = validatePaymentQr(body && body.contentType, body && body.encoded);
-        if (validated.error) return sendJson(response, 400, { error: validated.error });
-        await mutateSettings(async () => {
-          await saveJsonAtomically(paymentQrFile, validated.qr);
-          paymentQr = validated.qr;
-        });
-        return sendJson(response, 200, { available: true });
       }
 
       const statusMatch = url.pathname.match(/^\/api\/admin\/orders\/([A-Fa-f0-9]{10})\/status$/);

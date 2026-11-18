@@ -11,12 +11,12 @@ test("UPI-only orders enforce menu availability and owner settings", async (cont
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cloud-kitchen-"));
   const ordersFile = path.join(directory, "orders.json");
   const availabilityFile = path.join(directory, "menu-availability.json");
-  const paymentQrFile = path.join(directory, "payment-qr.json");
   const server = createApp({
     adminPassword: "a-unique-test-password",
+    upiId: "9177333167-2@ybl",
+    upiPayeeName: "BANDARI RAVI",
     ordersFile,
-    availabilityFile,
-    paymentQrFile
+    availabilityFile
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   context.after(async () => {
@@ -27,7 +27,7 @@ test("UPI-only orders enforce menu availability and owner settings", async (cont
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   const initialMenu = await fetch(`${baseUrl}/api/menu`);
   const initialMenuData = await initialMenu.json();
-  assert.equal(initialMenuData.paymentQrAvailable, false);
+  assert.equal(Object.hasOwn(initialMenuData, "paymentQrAvailable"), false);
   assert.ok(initialMenuData.items.every((item) => item.available === false));
   assert.deepEqual(initialMenuData.items.map((item) => [item.id, item.name, item.price]), [
     ["butter-paneer", "Butter Paneer Bowl", 289],
@@ -48,13 +48,6 @@ test("UPI-only orders enforce menu availability and owner settings", async (cont
     paymentMethod: "cash_on_delivery"
   };
   const items = [{ id: "butter-paneer", quantity: 2 }];
-  const blockedBeforeQr = await fetch(`${baseUrl}/api/orders`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ customer, items })
-  });
-  assert.equal(blockedBeforeQr.status, 400);
-
   const unauthorized = await fetch(`${baseUrl}/api/admin/menu`);
   assert.equal(unauthorized.status, 401);
   const anonymousSession = await fetch(`${baseUrl}/api/admin/session`);
@@ -73,23 +66,12 @@ test("UPI-only orders enforce menu availability and owner settings", async (cont
     body: JSON.stringify({ available: true })
   });
   assert.equal(availability.status, 200);
-  const badQr = await fetch(`${baseUrl}/api/admin/payment-qr`, {
+  const removedQrUpload = await fetch(`${baseUrl}/api/admin/payment-qr`, {
     method: "PUT",
     headers: { Cookie: cookie, "Content-Type": "application/json" },
-    body: JSON.stringify({ contentType: "image/png", encoded: Buffer.from("not a QR image").toString("base64") })
+    body: JSON.stringify({ contentType: "image/png", encoded: "unused" })
   });
-  assert.equal(badQr.status, 400);
-
-  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0, 0, 0, 0, 0]);
-  const qrUpload = await fetch(`${baseUrl}/api/admin/payment-qr`, {
-    method: "PUT",
-    headers: { Cookie: cookie, "Content-Type": "application/json" },
-    body: JSON.stringify({ contentType: "image/png", encoded: png.toString("base64") })
-  });
-  assert.equal(qrUpload.status, 200);
-  const publicQr = await fetch(`${baseUrl}/api/payment-qr`);
-  assert.equal(publicQr.headers.get("content-type"), "image/png");
-  assert.deepEqual(Buffer.from(await publicQr.arrayBuffer()), png);
+  assert.equal(removedQrUpload.status, 404);
 
   const unavailableItem = await fetch(`${baseUrl}/api/orders`, {
     method: "POST",
@@ -214,14 +196,45 @@ test("UPI-only orders enforce menu availability and owner settings", async (cont
     "chocolate-cake": false,
     "mango-lassi": false
   });
-  assert.equal(JSON.parse(await fs.readFile(paymentQrFile, "utf8")).contentType, "image/png");
 });
 
 test("owner password must be configured securely", () => {
   assert.throws(() => createApp({ adminPassword: "short" }), /at least 12 characters/);
 });
 
-test("configured UPI app details allow checkout without a QR upload", async (context) => {
+test("orders are rejected when UPI settings are missing", async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cloud-kitchen-no-upi-"));
+  const availabilityFile = path.join(directory, "menu-availability.json");
+  await fs.writeFile(availabilityFile, JSON.stringify({ "butter-paneer": true }));
+  const server = createApp({
+    adminPassword: "a-unique-test-password",
+    ordersFile: path.join(directory, "orders.json"),
+    availabilityFile
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  context.after(async () => {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/orders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      customer: {
+        name: "A Customer",
+        phone: "9876543210",
+        address: "12 Example Road, Bengaluru",
+        paymentReference: "UTR123456789"
+      },
+      items: [{ id: "butter-paneer", quantity: 1 }]
+    })
+  });
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /UPI payments are not set up/);
+});
+
+test("configured UPI app details enable UPI-only checkout", async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cloud-kitchen-upi-intent-"));
   const availabilityFile = path.join(directory, "menu-availability.json");
   await fs.writeFile(availabilityFile, JSON.stringify({ "butter-paneer": true }));
@@ -230,8 +243,7 @@ test("configured UPI app details allow checkout without a QR upload", async (con
     upiId: "9177333167-2@ybl",
     upiPayeeName: "BANDARI RAVI",
     ordersFile: path.join(directory, "orders.json"),
-    availabilityFile,
-    paymentQrFile: path.join(directory, "payment-qr.json")
+    availabilityFile
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   context.after(async () => {
@@ -246,7 +258,7 @@ test("configured UPI app details allow checkout without a QR upload", async (con
     upiId: "9177333167-2@ybl",
     payeeName: "BANDARI RAVI"
   });
-  assert.equal(menuData.paymentQrAvailable, false);
+  assert.equal(Object.hasOwn(menuData, "paymentQrAvailable"), false);
 
   const response = await fetch(`${baseUrl}/api/orders`, {
     method: "POST",
@@ -277,8 +289,7 @@ test("saved chicken biryani availability carries over to its full and mini menu 
   const server = createApp({
     adminPassword: "a-unique-test-password",
     ordersFile: path.join(directory, "orders.json"),
-    availabilityFile,
-    paymentQrFile: path.join(directory, "payment-qr.json")
+    availabilityFile
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   context.after(async () => {

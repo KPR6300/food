@@ -146,10 +146,6 @@
     .info-card { padding: 30px; border: 1px solid #ece3d8; border-radius: var(--radius); background: var(--paper); }
     .info-card h2 { margin-bottom: 10px; font-size: 2rem; }
     .info-card > p { color: var(--muted); font-size: .9rem; }
-    .payment-qr { width: 190px; height: 190px; object-fit: contain; padding: 9px; border: 1px solid var(--line); border-radius: 14px; background: white; }
-    .payment-qr[hidden] { display: none; }
-    .payment-qr-message { margin: 14px 0 0 !important; padding: 12px; border-radius: 12px; background: #f5f0e9; color: #625e56 !important; font-size: .82rem !important; }
-    .payment-qr-message[hidden] { display: none; }
     .payment-caption { margin: 14px 0 0 !important; font-size: .75rem !important; }
     .upi-details { margin: 12px 0 0 !important; color: var(--ink) !important; font-size: .82rem !important; font-weight: 750; }
     .location-line { display: flex; gap: 13px; margin: 21px 0; }
@@ -213,11 +209,9 @@
     .map-status { min-height: 1.2em; margin: 0; color: var(--muted); font-size: .77rem; }
     .map-marker { display: grid; place-items: center; width: 32px; height: 32px; border: 2px solid white; border-radius: 50% 50% 50% 0; background: var(--orange); color: white; box-shadow: 0 2px 6px #0005; font-size: 17px; transform: rotate(-45deg); }
     .map-marker span { transform: rotate(45deg); }
-    .checkout-qr { display: grid; justify-items: center; gap: 8px; padding: 13px; border-radius: 13px; background: #f5f0e9; text-align: center; font-size: .82rem; }
-    .checkout-qr img { width: 190px; height: 190px; object-fit: contain; padding: 8px; border-radius: 10px; background: white; }
-    .checkout-qr img[hidden] { display: none; }
-    .checkout-qr .button[hidden] { display: none; }
-    .checkout-qr-note { margin: 0; color: var(--muted); font-size: .75rem; }
+    .checkout-payment { display: grid; justify-items: center; gap: 8px; padding: 13px; border-radius: 13px; background: #f5f0e9; text-align: center; font-size: .82rem; }
+    .checkout-payment .button[hidden] { display: none; }
+    .checkout-payment-note { margin: 0; color: var(--muted); font-size: .75rem; }
     .order-success { padding: 16px 0 3px; text-align: center; }
     .order-success[hidden] { display: none; }
     .order-code { margin: 12px 0; padding: 13px; border-radius: 12px; background: #f5f0e9; font-size: 1.4rem; font-weight: 850; letter-spacing: .12em; }
@@ -455,10 +449,9 @@
         <article class="info-card" id="payments">
           <span class="section-kicker">UPI only</span>
           <h2>Pay with UPI.</h2>
-          <p>Open your UPI app from checkout or scan the kitchen's QR code. Enter your transaction reference after paying.</p>
-          <img class="payment-qr" id="public-payment-qr" alt="Kitchen UPI payment QR code" hidden>
+          <p>Pay through your UPI app from checkout, then enter your transaction reference.</p>
           <p class="upi-details" id="public-upi-details" hidden></p>
-          <p class="payment-qr-message" id="payment-qr-message" role="status">The kitchen is setting up UPI payments. Ordering will open when they are ready.</p>
+          <p class="upi-details" id="payment-setup-message" role="status">The kitchen is setting up UPI payments. Ordering will open when they are ready.</p>
           <p class="payment-caption">Payment references are checked manually by the kitchen. This site does not process or automatically verify payments.</p>
         </article>
         <article class="info-card" id="location">
@@ -537,12 +530,12 @@
             <small>Map © OpenStreetMap contributors. Map searches and selected map points are looked up using OpenStreetMap services.</small>
           </div>
         </div>
-        <div class="checkout-qr">
-          <strong>1. Pay using any UPI app</strong>
+        <div class="checkout-payment">
+          <strong>Pay using your UPI app</strong>
+          <strong id="checkout-payment-amount">Order total: ₹0</strong>
           <a class="button button-primary" id="open-upi-app" href="#" target="_blank" rel="noopener noreferrer" hidden>Open UPI app</a>
-          <img id="checkout-payment-qr" alt="Kitchen UPI payment QR code" hidden>
           <span id="checkout-payee"></span>
-          <p class="checkout-qr-note">You can also scan the QR code. After paying, return here and enter your UPI transaction reference.</p>
+          <p class="checkout-payment-note">After paying in your UPI app, return here and enter your transaction reference.</p>
         </div>
         <label>UPI transaction reference<input name="paymentReference" autocomplete="off" required minlength="6" maxlength="40" pattern="[A-Za-z0-9-]+" placeholder="Reference / UTR from your UPI app"></label>
         <p class="checkout-note">2. Enter the UPI reference after paying. The kitchen verifies it manually before preparing your order.</p>
@@ -570,7 +563,6 @@
     const menuAvailability = new Map();
     let toastTimer;
     let activeOrderPhone = "";
-    let paymentQrAvailable = false;
     let upiPayment = null;
     let deliveryMap = null;
     let deliveryMarker = null;
@@ -782,8 +774,9 @@
       }
 
       document.getElementById("cart-subtotal").textContent = `₹${subtotal}`;
+      document.getElementById("checkout-payment-amount").textContent = `Order total: ₹${subtotal}`;
       const cartAvailable = [...cart.keys()].every((id) => menuAvailability.get(id) === true);
-      const paymentAvailable = paymentQrAvailable || upiPayment !== null;
+      const paymentAvailable = upiPayment !== null;
       const checkoutReady = cart.size > 0 && cartAvailable && paymentAvailable;
       const checkoutButton = document.getElementById("checkout-button");
       checkoutButton.disabled = !checkoutReady;
@@ -825,14 +818,9 @@
         const response = await fetch("/api/menu");
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Menu availability could not be loaded.");
-        paymentQrAvailable = data.paymentQrAvailable;
         upiPayment = data.upiPayment;
-        const publicQr = document.getElementById("public-payment-qr");
-        const checkoutQr = document.getElementById("checkout-payment-qr");
-        publicQr.hidden = !paymentQrAvailable;
-        checkoutQr.hidden = !paymentQrAvailable;
-        const paymentAvailable = paymentQrAvailable || upiPayment !== null;
-        document.getElementById("payment-qr-message").hidden = paymentAvailable;
+        const paymentAvailable = upiPayment !== null;
+        document.getElementById("payment-setup-message").hidden = paymentAvailable;
         const publicUpiDetails = document.getElementById("public-upi-details");
         publicUpiDetails.hidden = !upiPayment;
         publicUpiDetails.textContent = upiPayment
@@ -840,18 +828,7 @@
           : "";
         document.getElementById("checkout-payee").textContent = upiPayment
           ? `Pay to ${upiPayment.payeeName} (${upiPayment.upiId})`
-          : paymentQrAvailable ? "Pay the order subtotal shown above." : "";
-        document.querySelector(".checkout-qr-note").textContent = paymentQrAvailable
-          ? "You can also scan the QR code. After paying, return here and enter your UPI transaction reference."
-          : "After paying in your UPI app, return here and enter your transaction reference.";
-        if (paymentQrAvailable) {
-          const qrUrl = `/api/payment-qr?v=${data.paymentQrVersion}`;
-          if (publicQr.getAttribute("src") !== qrUrl) publicQr.src = qrUrl;
-          if (checkoutQr.getAttribute("src") !== qrUrl) checkoutQr.src = qrUrl;
-        } else {
-          publicQr.removeAttribute("src");
-          checkoutQr.removeAttribute("src");
-        }
+          : "";
 
         for (const item of data.items) {
           menuAvailability.set(item.id, item.available);
