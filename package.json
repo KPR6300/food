@@ -1,0 +1,13 @@
+{
+  "name": "bhargavi-cloud-kitchen",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Customer ordering and order status website for Bhargavi Cloud",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

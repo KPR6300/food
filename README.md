@@ -1,0 +1,36 @@
+# Bhargavi Cloud order website
+
+This site accepts customer orders, saves them on the server, and lets the owner update order status from a protected dashboard.
+
+## Run locally
+
+Requires Node.js 20 or newer. In PowerShell:
+
+```powershell
+$env:ADMIN_PASSWORD = "choose-a-unique-password-at-least-12-characters"
+$env:UPI_ID = "merchant@bank"
+$env:UPI_PAYEE_NAME = "Kitchen Name"
+npm start
+```
+
+Open `http://localhost:3000` for customers and `http://localhost:3000/admin` for the owner. Orders are stored in `data/orders.json`; keep that folder on a persistent disk and back it up.
+
+## Owner setup
+
+Sign in to `/admin`, tick the menu items that are available, and upload the kitchen's UPI QR image (PNG, JPEG, or WebP; up to 1.5 MB). Set `UPI_ID` and `UPI_PAYEE_NAME` when starting the server to let customers launch a UPI app from checkout. At least one UPI payment method and one available dish are needed to accept orders. Unticked dishes remain visible on the menu as unavailable.
+
+After entering their delivery details, customers can open a UPI app with the order amount and recipient prefilled, or scan the QR code as a fallback. App launching requires a compatible device; desktop customers can scan the QR from a phone. Customers enter the UPI transaction reference after paying. The kitchen must verify the payment in its UPI app and mark it verified in the dashboard. This site does not automatically verify payments.
+
+Customers can search or tap the OpenStreetMap-powered checkout map, or share their current location, to fill in their delivery address. Location access is optional and requires browser permission. Map searches and reverse address lookups are sent to OpenStreetMap's public Nominatim service; selected coordinates are saved with the order and shown to the owner as a map link. Customers can also enter the address manually.
+
+Customers can leave one 1–5 star rating and an optional comment after the order is marked delivered. The owner can see feedback alongside the order in the dashboard.
+
+Orders, menu availability, and the uploaded payment QR are saved under `data/`. Keep this directory on persistent storage and back it up.
+
+## Deploy
+
+Deploy this folder to a Node.js host that supports persistent storage. Configure `ADMIN_PASSWORD` (at least 12 characters), `UPI_ID`, `UPI_PAYEE_NAME`, `NODE_ENV=production`, and the port supplied by the host. If the host's default disk is temporary, set `ORDERS_FILE` to a persistent disk location. Use HTTPS in production. The owner dashboard signs out when the server restarts.
+
+UPI QR payments are the only payment option. Update the sample menu, address, and delivery areas in `index.html` before going live.
+
+Run checks with `npm test`.
