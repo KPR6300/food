@@ -13,7 +13,7 @@ $env:UPI_PAYEE_NAME = "Kitchen Name"
 npm start
 ```
 
-Open `http://localhost:3000` for customers and `http://localhost:3000/admin` for the owner. Orders are stored in `data/orders.json`; keep that folder on a persistent disk and back it up.
+Open `http://localhost:3000` for customers and `http://localhost:3000/admin` for the owner. Signing out only ends the owner session; orders remain stored in `data/orders.json`. Keep that folder on a persistent disk and back it up.
 
 ## Owner setup
 

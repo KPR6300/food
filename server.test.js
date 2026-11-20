@@ -182,7 +182,31 @@ test("COD and UPI orders enforce menu availability and owner settings", async (c
   assert.equal(deliveredOrder.rating.stars, 5);
   assert.equal(deliveredOrder.rating.comment, "Great meal");
 
+  const logout = await fetch(`${baseUrl}/api/admin/logout`, {
+    method: "POST",
+    headers: { Cookie: cookie }
+  });
+  assert.equal(logout.status, 200);
+  const signedOutOrders = await fetch(`${baseUrl}/api/admin/orders`, { headers: { Cookie: cookie } });
+  assert.equal(signedOutOrders.status, 401);
+
+  const relogin = await fetch(`${baseUrl}/api/admin/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: "a-unique-test-password" })
+  });
+  assert.equal(relogin.status, 200);
+  const reloginCookie = relogin.headers.get("set-cookie").split(";")[0];
+  const ordersAfterRelogin = await fetch(`${baseUrl}/api/admin/orders`, {
+    headers: { Cookie: reloginCookie }
+  });
+  assert.equal(ordersAfterRelogin.status, 200);
+  const restoredOrders = await ordersAfterRelogin.json();
+  assert.equal(restoredOrders.orders.length, 1);
+  assert.equal(restoredOrders.orders[0].code, order.code);
+
   const persistedOrders = JSON.parse(await fs.readFile(ordersFile, "utf8"));
+  assert.equal(persistedOrders.length, 1);
   assert.equal(persistedOrders[0].statusHistory.length, 3);
   assert.equal(persistedOrders[0].paymentStatus, "verified");
   assert.equal(persistedOrders[0].rating.stars, 5);
