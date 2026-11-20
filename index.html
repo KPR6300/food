@@ -197,6 +197,9 @@
     .checkout-form textarea { min-height: 76px; resize: vertical; }
     .checkout-form .button { width: 100%; }
     .address-picker { display: grid; gap: 9px; }
+    .address-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+    .address-fields label:last-child { grid-column: 1 / -1; }
+    @media (max-width: 560px) { .address-fields { grid-template-columns: 1fr; } }
     .address-picker-toggle { justify-self: start; padding: 8px 12px; border: 1px solid var(--line); border-radius: 999px; background: white; color: var(--green); font-size: .82rem; font-weight: 800; }
     .map-picker { display: grid; gap: 9px; padding: 12px; border: 1px solid var(--line); border-radius: 13px; background: #f5f0e9; }
     .map-picker[hidden] { display: none; }
@@ -212,6 +215,13 @@
     .checkout-payment { display: grid; justify-items: center; gap: 8px; padding: 13px; border-radius: 13px; background: #f5f0e9; text-align: center; font-size: .82rem; }
     .checkout-payment .button[hidden] { display: none; }
     .checkout-payment-note { margin: 0; color: var(--muted); font-size: .75rem; }
+    .payment-methods { display: grid; gap: 8px; }
+    .payment-option { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 12px; background: white; font-size: .82rem; font-weight: 750; }
+    .payment-option input { width: auto; margin-top: 3px; }
+    .payment-option small { display: block; margin-top: 2px; color: var(--muted); font-weight: 500; }
+    .payment-option[hidden], .upi-payment-details[hidden] { display: none; }
+    .payment-methods { border: 0; margin: 0; padding: 0; }
+    .payment-methods legend { margin-bottom: 7px; font-size: .8rem; font-weight: 750; }
     .order-success { padding: 16px 0 3px; text-align: center; }
     .order-success[hidden] { display: none; }
     .order-code { margin: 12px 0; padding: 13px; border-radius: 12px; background: #f5f0e9; font-size: 1.4rem; font-weight: 850; letter-spacing: .12em; }
@@ -447,12 +457,12 @@
     <section class="order-info">
       <div class="info-grid wrap">
         <article class="info-card" id="payments">
-          <span class="section-kicker">UPI only</span>
-          <h2>Pay with UPI.</h2>
-          <p>Pay through your UPI app from checkout, then enter your transaction reference.</p>
+          <span class="section-kicker">UPI or cash</span>
+          <h2>Choose how to pay.</h2>
+          <p>Pay now with UPI or choose cash on delivery at checkout.</p>
           <p class="upi-details" id="public-upi-details" hidden></p>
-          <p class="upi-details" id="payment-setup-message" role="status">The kitchen is setting up UPI payments. Ordering will open when they are ready.</p>
-          <p class="payment-caption">Payment references are checked manually by the kitchen. This site does not process or automatically verify payments.</p>
+          <p class="upi-details" id="payment-setup-message" role="status">UPI is currently unavailable. Cash on delivery is still available.</p>
+          <p class="payment-caption">UPI payments are checked manually by the kitchen. This site does not process or automatically verify payments.</p>
         </article>
         <article class="info-card" id="location">
           <span class="section-kicker">A kitchen near you</span>
@@ -512,7 +522,11 @@
         <label>Your name<input name="name" autocomplete="name" required maxlength="80"></label>
         <label>Phone number<input name="phone" type="tel" autocomplete="tel" required maxlength="20"></label>
         <div class="address-picker">
-          <label>Delivery address<textarea name="address" autocomplete="street-address" required maxlength="300"></textarea></label>
+          <div class="address-fields">
+            <label>House / flat no. (optional)<input name="houseNumber" autocomplete="address-line1" maxlength="40" placeholder="e.g. 12B"></label>
+            <label>Building / apartment name (optional)<input name="buildingName" maxlength="80" placeholder="e.g. Green Residency"></label>
+            <label>Street address<textarea name="address" autocomplete="street-address" required maxlength="300" placeholder="Street, area and landmark"></textarea></label>
+          </div>
           <input type="hidden" name="latitude">
           <input type="hidden" name="longitude">
           <button class="address-picker-toggle" id="toggle-map-picker" type="button" aria-expanded="false" aria-controls="map-picker">📍 Select address on map</button>
@@ -530,15 +544,26 @@
             <small>Map © OpenStreetMap contributors. Map searches and selected map points are looked up using OpenStreetMap services.</small>
           </div>
         </div>
+        <fieldset class="payment-methods">
+          <legend>Payment method</legend>
+          <label class="payment-option" id="upi-payment-option">
+            <input type="radio" name="paymentMethod" value="upi">
+            <span>UPI<small>Pay securely from a UPI app</small></span>
+          </label>
+          <label class="payment-option">
+            <input type="radio" name="paymentMethod" value="cash_on_delivery" checked>
+            <span>Cash on delivery<small>Pay cash when your order arrives</small></span>
+          </label>
+        </fieldset>
+        <div class="upi-payment-details" id="upi-payment-details" hidden>
         <div class="checkout-payment">
           <strong>Pay using your UPI app</strong>
           <strong id="checkout-payment-amount">Order total: ₹0</strong>
           <a class="button button-primary" id="open-upi-app" href="#" target="_blank" rel="noopener noreferrer" hidden>Open UPI app</a>
           <span id="checkout-payee"></span>
-          <p class="checkout-payment-note">After paying in your UPI app, return here and enter your transaction reference.</p>
+          <p class="checkout-payment-note">Complete the payment in your UPI app, then return here to place the order.</p>
         </div>
-        <label>UPI transaction reference<input name="paymentReference" autocomplete="off" required minlength="6" maxlength="40" pattern="[A-Za-z0-9-]+" placeholder="Reference / UTR from your UPI app"></label>
-        <p class="checkout-note">2. Enter the UPI reference after paying. The kitchen verifies it manually before preparing your order.</p>
+        </div>
         <p class="form-error" id="checkout-error" role="alert"></p>
         <button class="button button-primary" type="submit">Place order</button>
       </form>
@@ -567,6 +592,20 @@
     let deliveryMap = null;
     let deliveryMarker = null;
     let addressWasSelectedOnMap = false;
+
+    function formRadio(paymentMethod) {
+      return document.querySelector(`input[name="paymentMethod"][value="${paymentMethod}"]`);
+    }
+
+    function togglePaymentMethod(paymentMethod) {
+      const upiDetails = document.getElementById("upi-payment-details");
+      const isUpi = paymentMethod === "upi";
+      upiDetails.hidden = !isUpi;
+    }
+
+    document.querySelectorAll('input[name="paymentMethod"]').forEach((radio) => {
+      radio.addEventListener("change", () => togglePaymentMethod(radio.value));
+    });
 
     const addressField = document.querySelector('#checkout-form [name="address"]');
     const latitudeField = document.querySelector('#checkout-form [name="latitude"]');
@@ -776,17 +815,14 @@
       document.getElementById("cart-subtotal").textContent = `₹${subtotal}`;
       document.getElementById("checkout-payment-amount").textContent = `Order total: ₹${subtotal}`;
       const cartAvailable = [...cart.keys()].every((id) => menuAvailability.get(id) === true);
-      const paymentAvailable = upiPayment !== null;
-      const checkoutReady = cart.size > 0 && cartAvailable && paymentAvailable;
+      const checkoutReady = cart.size > 0 && cartAvailable;
       const checkoutButton = document.getElementById("checkout-button");
       checkoutButton.disabled = !checkoutReady;
       checkoutButton.style.opacity = checkoutReady ? "1" : ".55";
       checkoutButton.hidden = !document.getElementById("checkout-form").hidden;
-      document.querySelector(".checkout-note").textContent = !paymentAvailable
-        ? "UPI checkout is disabled. The owner must set UPI_ID and UPI_PAYEE_NAME in the hosting service settings."
-        : !cartAvailable
+      document.querySelector(".checkout-note").textContent = !cartAvailable
           ? "Remove unavailable items from your bag before continuing."
-          : "Enter your delivery details, pay with UPI, then enter the transaction reference.";
+          : "Enter your delivery details and choose UPI or cash on delivery.";
       const upiLink = document.getElementById("open-upi-app");
       if (upiPayment) {
         const parameters = new URLSearchParams({
@@ -794,7 +830,8 @@
           pn: upiPayment.payeeName,
           am: String(subtotal),
           cu: "INR",
-          tn: "Bhargavi Cloud order"
+          tn: "Bhargavi Cloud order",
+          url: `${window.location.origin}/#checkout`
         });
         upiLink.href = `upi://pay?${parameters.toString()}`;
         upiLink.textContent = `Pay ₹${subtotal} in UPI app`;
@@ -821,6 +858,15 @@
         upiPayment = data.upiPayment;
         const paymentAvailable = upiPayment !== null;
         document.getElementById("payment-setup-message").hidden = paymentAvailable;
+        document.getElementById("upi-payment-option").hidden = !paymentAvailable;
+        const upiRadio = formRadio("upi");
+        const codRadio = formRadio("cash_on_delivery");
+        if (!paymentAvailable) {
+          codRadio.checked = true;
+          togglePaymentMethod("cash_on_delivery");
+        } else if (!upiRadio.checked && !codRadio.checked) {
+          codRadio.checked = true;
+        }
         const publicUpiDetails = document.getElementById("public-upi-details");
         publicUpiDetails.hidden = !upiPayment;
         publicUpiDetails.textContent = upiPayment

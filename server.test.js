@@ -7,7 +7,7 @@ const path = require("node:path");
 const test = require("node:test");
 const { createApp } = require("./server");
 
-test("UPI-only orders enforce menu availability and owner settings", async (context) => {
+test("COD and UPI orders enforce menu availability and owner settings", async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cloud-kitchen-"));
   const ordersFile = path.join(directory, "orders.json");
   const availabilityFile = path.join(directory, "menu-availability.json");
@@ -43,8 +43,9 @@ test("UPI-only orders enforce menu availability and owner settings", async (cont
   const customer = {
     name: "A Customer",
     phone: "9876543210",
+    houseNumber: "12B",
+    buildingName: "Green Residency",
     address: "12 Example Road, Bengaluru",
-    paymentReference: "UTR123456789",
     paymentMethod: "cash_on_delivery"
   };
   const items = [{ id: "butter-paneer", quantity: 2 }];
@@ -80,16 +81,6 @@ test("UPI-only orders enforce menu availability and owner settings", async (cont
   });
   assert.equal(unavailableItem.status, 400);
 
-  const missingReference = await fetch(`${baseUrl}/api/orders`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      customer: { ...customer, paymentReference: "" },
-      items
-    })
-  });
-  assert.equal(missingReference.status, 400);
-
   const incompleteLocation = await fetch(`${baseUrl}/api/orders`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -104,7 +95,7 @@ test("UPI-only orders enforce menu availability and owner settings", async (cont
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      customer: { ...customer, latitude: "17.45", longitude: "78.61" },
+      customer: { ...customer, paymentMethod: "upi", latitude: "17.45", longitude: "78.61" },
       items: [{ id: "butter-paneer", quantity: 2, price: 1 }]
     })
   });
@@ -126,7 +117,8 @@ test("UPI-only orders enforce menu availability and owner settings", async (cont
   assert.equal(listedOrders.orders.length, 1);
   assert.equal(listedOrders.orders[0].paymentMethod, "upi");
   assert.equal(listedOrders.orders[0].paymentStatus, "pending");
-  assert.equal(listedOrders.orders[0].paymentReference, "UTR123456789");
+  assert.equal(listedOrders.orders[0].customer.houseNumber, "12B");
+  assert.equal(listedOrders.orders[0].customer.buildingName, "Green Residency");
   assert.deepEqual(listedOrders.orders[0].customer.location, { latitude: 17.45, longitude: 78.61 });
 
   const updated = await fetch(`${baseUrl}/api/admin/orders/${order.code}/status`, {
@@ -202,7 +194,7 @@ test("owner password must be configured securely", () => {
   assert.throws(() => createApp({ adminPassword: "short" }), /at least 12 characters/);
 });
 
-test("orders are rejected when UPI settings are missing", async (context) => {
+test("COD remains available when UPI settings are missing", async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cloud-kitchen-no-upi-"));
   const availabilityFile = path.join(directory, "menu-availability.json");
   await fs.writeFile(availabilityFile, JSON.stringify({ "butter-paneer": true }));
@@ -225,13 +217,14 @@ test("orders are rejected when UPI settings are missing", async (context) => {
         name: "A Customer",
         phone: "9876543210",
         address: "12 Example Road, Bengaluru",
-        paymentReference: "UTR123456789"
+        paymentMethod: "cash_on_delivery"
       },
       items: [{ id: "butter-paneer", quantity: 1 }]
     })
   });
-  assert.equal(response.status, 400);
-  assert.match((await response.json()).error, /UPI payments are not set up/);
+  assert.equal(response.status, 201);
+  const order = (await response.json()).order;
+  assert.equal(order.total, 289);
 });
 
 test("configured UPI app details enable UPI-only checkout", async (context) => {
@@ -268,7 +261,7 @@ test("configured UPI app details enable UPI-only checkout", async (context) => {
         name: "A Customer",
         phone: "9876543210",
         address: "12 Example Road, Bengaluru",
-        paymentReference: "UTR123456789"
+        paymentMethod: "upi"
       },
       items: [{ id: "butter-paneer", quantity: 1 }]
     })

@@ -195,7 +195,12 @@
         const phone = document.createElement("p");
         phone.textContent = order.customer.phone;
         const address = document.createElement("p");
-        address.textContent = order.customer.address;
+        const addressParts = [
+          order.customer.houseNumber ? `House/Flat: ${order.customer.houseNumber}` : "",
+          order.customer.buildingName ? `Building: ${order.customer.buildingName}` : "",
+          order.customer.address
+        ].filter(Boolean);
+        address.textContent = addressParts.join(" · ");
         customer.append(customerTitle, name, phone, address);
         if (order.customer.location) {
           const mapLink = document.createElement("a");
@@ -220,11 +225,15 @@
         footer.className = "order-footer";
         const paymentDetails = document.createElement("div");
         paymentDetails.className = "payment-reference";
-        paymentDetails.textContent = `UPI · Reference: ${order.paymentReference}`;
+        paymentDetails.textContent = order.paymentMethod === "cash_on_delivery"
+          ? "Cash on delivery"
         const paymentStatus = document.createElement("select");
         paymentStatus.className = "payment-status";
         paymentStatus.setAttribute("aria-label", `Payment verification for order ${order.code}`);
-        for (const [value, label] of [["pending", "Pending verification"], ["verified", "Verified"]]) {
+        const paymentOptions = order.paymentMethod === "cash_on_delivery"
+          ? [["pay_on_delivery", "Pay on delivery"], ["verified", "Collected"]]
+          : [["pending", "Pending verification"], ["verified", "Verified"]];
+        for (const [value, label] of paymentOptions) {
           const option = document.createElement("option");
           option.value = value;
           option.textContent = label;

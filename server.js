@@ -73,8 +73,13 @@ function validateOrder(body, availability, paymentAvailable) {
 
   const name = typeof customer.name === "string" ? customer.name.trim() : "";
   const phone = typeof customer.phone === "string" ? normalizePhone(customer.phone) : "";
-  const address = typeof customer.address === "string" ? customer.address.trim() : "";
-  const paymentReference = typeof customer.paymentReference === "string" ? customer.paymentReference.trim() : "";
+  const houseNumber = typeof customer.houseNumber === "string" ? customer.houseNumber.trim() : "";
+  const buildingName = typeof customer.buildingName === "string" ? customer.buildingName.trim() : "";
+  const streetAddress = typeof customer.address === "string" ? customer.address.trim() : "";
+  if (houseNumber.length > 40) return { error: "House or flat number must be 40 characters or fewer." };
+  if (buildingName.length > 80) return { error: "Building name must be 80 characters or fewer." };
+  const addressParts = [houseNumber, buildingName, streetAddress].filter(Boolean);
+  const address = addressParts.join(", ");
   const hasLatitude = customer.latitude !== undefined && customer.latitude !== "";
   const hasLongitude = customer.longitude !== undefined && customer.longitude !== "";
   let location = null;
@@ -91,10 +96,10 @@ function validateOrder(body, availability, paymentAvailable) {
   }
   if (name.length < 2 || name.length > 80) return { error: "Enter a name between 2 and 80 characters." };
   if (phone.length < 10 || phone.length > 15) return { error: "Enter a valid phone number." };
-  if (address.length < 8 || address.length > 300) return { error: "Enter a delivery address between 8 and 300 characters." };
-  if (!paymentAvailable) return { error: "UPI payments are not set up yet. Please try again later." };
-  if (paymentReference.length < 6 || paymentReference.length > 40 || !/^[A-Za-z0-9-]+$/.test(paymentReference)) {
-    return { error: "Enter the 6–40 character UPI transaction reference from your payment app." };
+  if (address.length < 8 || address.length > 420) return { error: "Enter a complete delivery address within 420 characters." };
+  const paymentMethod = customer.paymentMethod === "cash_on_delivery" ? "cash_on_delivery" : "upi";
+  if (paymentMethod === "upi") {
+    if (!paymentAvailable) return { error: "UPI payments are not set up yet. Please choose cash on delivery." };
   }
   if (!Array.isArray(body.items) || body.items.length < 1 || body.items.length > 30) {
     return { error: "Your bag is empty or contains too many items." };
@@ -122,11 +127,17 @@ function validateOrder(body, availability, paymentAvailable) {
   return {
     order: {
       code: crypto.randomBytes(5).toString("hex").toUpperCase(),
-      customer: { name, phone, address, ...(location ? { location } : {}) },
+      customer: {
+        name,
+        phone,
+        address,
+        ...(houseNumber ? { houseNumber } : {}),
+        ...(buildingName ? { buildingName } : {}),
+        ...(location ? { location } : {})
+      },
       items,
-      paymentMethod: "upi",
-      paymentReference,
-      paymentStatus: "pending",
+      paymentMethod,
+      paymentStatus: paymentMethod === "upi" ? "pending" : "pay_on_delivery",
       total,
       status: "received",
       statusHistory: [{ status: "received", at: new Date().toISOString() }],
@@ -424,7 +435,7 @@ function createApp({
       const paymentStatusMatch = url.pathname.match(/^\/api\/admin\/orders\/([A-Fa-f0-9]{10})\/payment$/);
       if (request.method === "PATCH" && paymentStatusMatch) {
         const body = await readJsonBody(request);
-        if (!body || !["pending", "verified"].includes(body.status)) {
+        if (!body || !["pending", "verified", "pay_on_delivery"].includes(body.status)) {
           return sendJson(response, 400, { error: "Choose a valid payment status." });
         }
         const updatedOrder = await mutateOrders((savedOrders) => {
