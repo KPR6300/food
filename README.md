@@ -13,7 +13,7 @@ $env:UPI_PAYEE_NAME = "Kitchen Name"
 npm start
 ```
 
-Open `http://localhost:3000` for customers and `http://localhost:3000/admin` for the owner. Signing out only ends the owner session; orders remain stored in `data/orders.json`. Keep that folder on a persistent disk and back it up.
+Open `http://localhost:3000` for customers and `http://localhost:3000/admin` for the owner. Signing out only ends the owner session; orders remain stored in `data/orders.json`. Food availability is saved to `data/menu-availability.json` only when the owner changes it. Keep `data/` on a persistent disk to retain both across restarts and deployments.
 
 ## Owner setup
 
@@ -29,7 +29,7 @@ Orders and menu availability are saved under `data/`. Keep this directory on per
 
 ## Deploy
 
-Deploy this folder to a Node.js host that supports persistent storage. On Render, add `ADMIN_PASSWORD` (at least 12 characters), `UPI_ID`, `UPI_PAYEE_NAME`, and `NODE_ENV=production` under the service's **Environment** settings, then redeploy. `UPI_ID` must be a valid UPI address and both UPI settings are required to enable checkout. Sign in to `/admin` after deploying and mark at least one menu item available; on a fresh instance, all dishes start unavailable. If the host's default disk is temporary, set `ORDERS_FILE` to a persistent disk location. Use HTTPS in production. The owner dashboard signs out when the server restarts.
+Deploy this folder to a Node.js host that supports persistent storage. On Render, add `ADMIN_PASSWORD` (at least 12 characters), `UPI_ID`, `UPI_PAYEE_NAME`, and `NODE_ENV=production` under the service's **Environment** settings, then redeploy. `UPI_ID` must be a valid UPI address and both UPI settings are required to enable checkout. Sign in to `/admin` after deploying and mark at least one menu item available; on a fresh instance, all dishes start unavailable. If the host's default disk is temporary, set `ORDERS_FILE` to a persistent disk location; menu availability is saved alongside it. Use HTTPS in production. The owner dashboard signs out when the server restarts.
 
 UPI app payments are the only payment option. Update the sample menu, address, and delivery areas in `index.html` before going live.
 

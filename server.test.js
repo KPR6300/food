@@ -307,6 +307,52 @@ test("configured UPI app details enable UPI-only checkout", async (context) => {
   }), /valid payment details/);
 });
 
+test("owner menu availability survives a server restart", async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cloud-kitchen-availability-"));
+  const ordersFile = path.join(directory, "orders.json");
+  const availabilityFile = path.join(directory, "menu-availability.json");
+  let server = createApp({
+    adminPassword: "a-unique-test-password",
+    ordersFile,
+    availabilityFile
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  context.after(async () => {
+    if (server.listening) {
+      await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  let baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const login = await fetch(`${baseUrl}/api/admin/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: "a-unique-test-password" })
+  });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get("set-cookie").split(";")[0];
+  const changedAvailability = await fetch(`${baseUrl}/api/admin/menu/butter-paneer/availability`, {
+    method: "PATCH",
+    headers: { Cookie: cookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ available: true })
+  });
+  assert.equal(changedAvailability.status, 200);
+  const beforeRestart = await fetch(`${baseUrl}/api/menu`);
+  const beforeRestartItems = (await beforeRestart.json()).items;
+  assert.equal(beforeRestartItems.find((item) => item.id === "butter-paneer").available, true);
+
+  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  server = createApp({ adminPassword: "a-unique-test-password", ordersFile, availabilityFile });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  const afterRestart = await fetch(`${baseUrl}/api/menu`);
+  const afterRestartItems = (await afterRestart.json()).items;
+  assert.equal(afterRestartItems.find((item) => item.id === "butter-paneer").available, true);
+  assert.equal(afterRestartItems.find((item) => item.id === "egg-fried-rice").available, false);
+});
+
 test("saved chicken biryani availability carries over to its full and mini menu items", async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cloud-kitchen-menu-migration-"));
   const availabilityFile = path.join(directory, "menu-availability.json");
