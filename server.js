@@ -40,6 +40,40 @@ function normalizePhone(phone) {
   return phone.replace(/\D/g, "");
 }
 
+function normalizeTwilioPhone(phone) {
+  if (typeof phone !== "string") return null;
+  const trimmed = phone.trim();
+  const digits = normalizePhone(trimmed);
+  if (trimmed.startsWith("+") && /^[1-9]\d{7,14}$/.test(digits)) return `+${digits}`;
+  if (/^[6-9]\d{9}$/.test(digits)) return `+91${digits}`;
+  if (/^0[6-9]\d{9}$/.test(digits)) return `+91${digits.slice(1)}`;
+  if (/^91[6-9]\d{9}$/.test(digits)) return `+${digits}`;
+  return null;
+}
+
+function phoneIdentity(phone) {
+  let digits = normalizePhone(phone);
+  if (digits.length === 12 && /^91[6-9]\d{9}$/.test(digits)) digits = digits.slice(2);
+  if (digits.length === 11 && /^0[6-9]\d{9}$/.test(digits)) digits = digits.slice(1);
+  return digits;
+}
+
+function phonesMatch(left, right) {
+  return phoneIdentity(left) === phoneIdentity(right);
+}
+
+function allowLimitedAttempt(attempts, key, limit, windowMs) {
+  const now = Date.now();
+  const current = attempts.get(key);
+  if (!current || current.until <= now) {
+    attempts.set(key, { count: 1, until: now + windowMs });
+    return true;
+  }
+  if (current.count >= limit) return false;
+  current.count += 1;
+  return true;
+}
+
 function safeEqual(left, right) {
   const leftHash = crypto.createHash("sha256").update(left).digest();
   const rightHash = crypto.createHash("sha256").update(right).digest();
@@ -161,7 +195,11 @@ function createApp({
   upiPayeeName,
   ordersFile = path.join(ROOT, "data", "orders.json"),
   availabilityFile = path.join(path.dirname(ordersFile), "menu-availability.json"),
-  secureCookies = false
+  secureCookies = false,
+  twilioAccountSid,
+  twilioAuthToken,
+  twilioVerifyServiceSid,
+  fetchImpl = globalThis.fetch
 } = {}) {
   if (typeof adminPassword !== "string" || adminPassword.length < 12) {
     throw new Error("Set ADMIN_PASSWORD to a password with at least 12 characters.");
@@ -175,6 +213,14 @@ function createApp({
   const upiPayment = hasUpiDetails
     ? { upiId, payeeName: upiPayeeName.trim() }
     : null;
+  const twilioSettings = [twilioAccountSid, twilioAuthToken, twilioVerifyServiceSid];
+  const hasTwilioSettings = twilioSettings.some(Boolean);
+  if (hasTwilioSettings && twilioSettings.some((setting) => typeof setting !== "string" || !setting.trim())) {
+    throw new Error("Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_VERIFY_SERVICE_SID together.");
+  }
+  if (hasTwilioSettings && typeof fetchImpl !== "function") {
+    throw new Error("A fetch implementation is required for phone verification.");
+  }
 
   let orders;
   let availability;
@@ -182,6 +228,8 @@ function createApp({
   let settingsMutationQueue = Promise.resolve();
   const sessions = new Map();
   const loginAttempts = new Map();
+  const otpSendAttempts = new Map();
+  const otpCheckAttempts = new Map();
   const ordersReady = fs.readFile(ordersFile, "utf8")
     .then((contents) => {
       orders = JSON.parse(contents);
@@ -253,6 +301,29 @@ function createApp({
     return true;
   }
 
+  async function callTwilioVerify(resource, fields) {
+    const response = await fetchImpl(
+      `https://verify.twilio.com/v2/Services/${encodeURIComponent(twilioVerifyServiceSid)}/${resource}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${twilioAccountSid}:${twilioAuthToken}`).toString("base64")}`,
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: new URLSearchParams(fields).toString()
+      }
+    );
+    if (!response.ok) {
+      const isInvalidCode = resource === "VerificationCheck" && [400, 404].includes(response.status);
+      const error = new Error(isInvalidCode
+        ? "The verification code is incorrect or expired."
+        : "The phone verification service is unavailable. Please try again later.");
+      error.status = isInvalidCode ? 401 : 503;
+      throw error;
+    }
+    return response.json();
+  }
+
   return http.createServer(async (request, response) => {
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -290,6 +361,75 @@ function createApp({
         return sendJson(response, 201, {
           order: { code: order.code, total: order.total, status: order.status }
         });
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/customer/orders/send-code") {
+        const body = await readJsonBody(request);
+        const phone = body && typeof body.phone === "string" ? body.phone.trim() : "";
+        const phoneDigits = normalizePhone(phone);
+        const phoneE164 = normalizeTwilioPhone(phone);
+        if (!phoneDigits || !phoneE164) {
+          return sendJson(response, 400, { error: "Enter a valid phone number, including the country code if needed." });
+        }
+        if (!hasTwilioSettings) {
+          return sendJson(response, 503, { error: "Phone verification is not configured yet." });
+        }
+        await ordersReady;
+        const attemptKey = `${request.socket.remoteAddress || "unknown"}:${phoneIdentity(phoneDigits)}`;
+        if (!allowLimitedAttempt(otpSendAttempts, attemptKey, 3, 15 * 60_000)) {
+          return sendJson(response, 429, { error: "Too many verification codes requested. Try again in 15 minutes." });
+        }
+        const hasOrders = orders.some((order) =>
+          order.customer && typeof order.customer.phone === "string" &&
+          phonesMatch(order.customer.phone, phoneDigits));
+        if (hasOrders) {
+          await callTwilioVerify("Verifications", { To: phoneE164, Channel: "sms" });
+        }
+        return sendJson(response, 200, {
+          ok: true,
+          message: "If this number has previous orders, a verification code has been sent."
+        });
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/customer/orders/verify-code") {
+        const body = await readJsonBody(request);
+        const phone = body && typeof body.phone === "string" ? body.phone.trim() : "";
+        const phoneDigits = normalizePhone(phone);
+        const phoneE164 = normalizeTwilioPhone(phone);
+        const code = body && typeof body.code === "string" ? body.code.trim() : "";
+        if (!phoneDigits || !phoneE164) {
+          return sendJson(response, 400, { error: "Enter a valid phone number, including the country code if needed." });
+        }
+        if (!/^\d{4,10}$/.test(code)) {
+          return sendJson(response, 400, { error: "Enter the verification code from your SMS." });
+        }
+        if (!hasTwilioSettings) {
+          return sendJson(response, 503, { error: "Phone verification is not configured yet." });
+        }
+        const attemptKey = `${request.socket.remoteAddress || "unknown"}:${phoneIdentity(phoneDigits)}`;
+        if (!allowLimitedAttempt(otpCheckAttempts, attemptKey, 6, 15 * 60_000)) {
+          return sendJson(response, 429, { error: "Too many verification attempts. Try again in 15 minutes." });
+        }
+        await ordersReady;
+        const verification = await callTwilioVerify("VerificationCheck", { To: phoneE164, Code: code });
+        if (verification.status !== "approved") {
+          return sendJson(response, 401, { error: "The verification code is incorrect or expired." });
+        }
+        const customerOrders = orders
+          .filter((order) =>
+            order.customer && typeof order.customer.phone === "string" &&
+            phonesMatch(order.customer.phone, phoneDigits))
+          .map((order) => ({
+            code: order.code,
+            items: order.items,
+            total: order.total,
+            status: order.status,
+            statusLabel: ORDER_STATUSES[order.status] || "Order status unavailable",
+            createdAt: order.createdAt,
+            paymentMethod: order.paymentMethod,
+            rating: order.rating || null
+          }));
+        return sendJson(response, 200, { orders: customerOrders });
       }
 
       const orderMatch = url.pathname.match(/^\/api\/orders\/([A-Fa-f0-9]{10})$/);
@@ -477,6 +617,9 @@ if (require.main === module) {
     adminPassword: process.env.ADMIN_PASSWORD,
     upiId: process.env.UPI_ID,
     upiPayeeName: process.env.UPI_PAYEE_NAME,
+    twilioAccountSid: process.env.TWILIO_ACCOUNT_SID,
+    twilioAuthToken: process.env.TWILIO_AUTH_TOKEN,
+    twilioVerifyServiceSid: process.env.TWILIO_VERIFY_SERVICE_SID,
     ordersFile: process.env.ORDERS_FILE ? path.resolve(process.env.ORDERS_FILE) : undefined,
     secureCookies: process.env.NODE_ENV === "production"
   });

@@ -314,6 +314,91 @@ test("configured UPI app details enable UPI-only checkout", async (context) => {
   }), /valid payment details/);
 });
 
+test("phone OTP verifies customers before returning their order history", async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cloud-kitchen-my-orders-"));
+  const ordersFile = path.join(directory, "orders.json");
+  await fs.writeFile(ordersFile, JSON.stringify([
+    {
+      code: "AABBCCDDEE",
+      customer: { name: "First Customer", phone: "9876543210", address: "Example Road" },
+      items: [{ id: "butter-paneer", name: "Butter Paneer Bowl", price: 289, quantity: 1 }],
+      total: 289,
+      status: "delivered",
+      paymentMethod: "cash_on_delivery",
+      createdAt: "2026-11-20T10:00:00.000Z"
+    },
+    {
+      code: "1122334455",
+      customer: { name: "Another Customer", phone: "9999999999", address: "Other Road" },
+      items: [{ id: "egg-fried-rice", name: "Egg Fried Rice", price: 149, quantity: 1 }],
+      total: 149,
+      status: "received",
+      paymentMethod: "upi",
+      createdAt: "2026-11-20T11:00:00.000Z"
+    }
+  ]));
+  const twilioRequests = [];
+  const server = createApp({
+    adminPassword: "a-unique-test-password",
+    ordersFile,
+    twilioAccountSid: "AC00000000000000000000000000000000",
+    twilioAuthToken: "test-auth-token",
+    twilioVerifyServiceSid: "VA00000000000000000000000000000000",
+    fetchImpl: async (url, options) => {
+      const fields = new URLSearchParams(options.body);
+      twilioRequests.push({ url, fields, authorization: options.headers.Authorization });
+      const isCheck = url.endsWith("/VerificationCheck");
+      const status = !isCheck ? "pending" : fields.get("Code") === "123456" ? "approved" : "pending";
+      return new Response(JSON.stringify({ status }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  context.after(async () => {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const sendCode = await fetch(`${baseUrl}/api/customer/orders/send-code`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone: "+91 98765 43210" })
+  });
+  assert.equal(sendCode.status, 200);
+  assert.equal(twilioRequests[0].fields.get("To"), "+919876543210");
+  assert.equal(twilioRequests[0].fields.get("Channel"), "sms");
+
+  const unknownNumber = await fetch(`${baseUrl}/api/customer/orders/send-code`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone: "9123456789" })
+  });
+  assert.equal(unknownNumber.status, 200);
+  assert.equal(twilioRequests.length, 1);
+
+  const invalidCode = await fetch(`${baseUrl}/api/customer/orders/verify-code`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone: "9876543210", code: "000000" })
+  });
+  assert.equal(invalidCode.status, 401);
+
+  const verified = await fetch(`${baseUrl}/api/customer/orders/verify-code`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone: "9876543210", code: "123456" })
+  });
+  assert.equal(verified.status, 200);
+  const history = await verified.json();
+  assert.deepEqual(history.orders.map((order) => order.code), ["AABBCCDDEE"]);
+  assert.equal(history.orders[0].statusLabel, "Delivered");
+  assert.equal(Object.hasOwn(history.orders[0], "customer"), false);
+  assert.equal(twilioRequests.length, 3);
+});
+
 test("owner menu availability survives a server restart", async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cloud-kitchen-availability-"));
   const ordersFile = path.join(directory, "orders.json");
