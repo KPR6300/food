@@ -490,15 +490,12 @@
 
     <section class="tracking-section" id="track-order">
       <div class="tracking-card">
-        <span class="section-kicker">Already ordered?</span>
-        <h2>Check your order.</h2>
-        <p style="color:var(--muted); margin:9px 0 0">Enter the order code from your confirmation and the phone number used when ordering. Once your order is delivered, you can leave a 1–5 star rating here.</p>
-        <form class="tracking-form" id="tracking-form">
-          <label>Order code<input name="orderCode" autocomplete="off" required maxlength="20" placeholder="e.g. A1B2C3D4"></label>
-          <label>Phone number<input name="phone" type="tel" autocomplete="tel" required maxlength="20" placeholder="Phone used for the order"></label>
-          <button class="button button-primary" type="submit">Check status</button>
-        </form>
-        <div class="tracking-result" id="tracking-result" role="status" aria-live="polite"></div>
+        <span class="section-kicker">Order updates</span>
+        <h2>Your order status.</h2>
+        <p style="color:var(--muted); margin:9px 0 0">Your current order appears here automatically and updates while this page is open. Visit My orders to see previous orders.</p>
+        <div class="tracking-result" id="tracking-result" role="status" aria-live="polite">
+          <p>Place an order to see its status here. You won’t need an order code or phone number.</p>
+        </div>
       </div>
     </section>
 
@@ -598,9 +595,9 @@
       <div class="order-success" id="order-success" hidden>
         <span class="note-icon" aria-hidden="true">✓</span>
         <h3>Order sent to the kitchen!</h3>
-        <p>Save your order code to check its status.</p>
+        <p>Your live status is shown on the customer page. Save this order code for your records.</p>
         <div class="order-code" id="order-code"></div>
-        <button class="button button-secondary" id="track-this-order" type="button">Track this order</button>
+        <button class="button button-secondary" id="track-this-order" type="button">View order status</button>
       </div>
     </div>
   </dialog>
@@ -637,7 +634,6 @@
     const toast = document.getElementById("toast");
     const menuAvailability = new Map();
     let toastTimer;
-    let activeOrderPhone = "";
     let trackedOrder = null;
     let trackingRequestPending = false;
     let ratingDismissed = false;
@@ -1022,8 +1018,7 @@
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "We couldn't place that order.");
-        activeOrderPhone = form.elements.phone.value;
-        trackedOrder = { code: result.order.code, phone: activeOrderPhone };
+        trackedOrder = { code: result.order.code, phone: form.elements.phone.value };
         ratingDismissed = false;
         cart.clear();
         renderCart();
@@ -1032,6 +1027,9 @@
         document.getElementById("checkout-button").hidden = true;
         document.getElementById("order-code").textContent = result.order.code;
         document.getElementById("order-success").hidden = false;
+        await refreshTrackedOrder();
+        cartDialog.close();
+        document.getElementById("track-order").scrollIntoView({ behavior: "smooth" });
       } catch (requestError) {
         error.textContent = requestError.message || "Unable to reach the kitchen. Please try again.";
       } finally {
@@ -1039,14 +1037,10 @@
       }
     });
 
-    document.getElementById("track-this-order").addEventListener("click", () => {
-      const code = document.getElementById("order-code").textContent;
+    document.getElementById("track-this-order").addEventListener("click", async () => {
       cartDialog.close();
-      const trackingForm = document.getElementById("tracking-form");
-      trackingForm.elements.orderCode.value = code;
-      trackingForm.elements.phone.value = activeOrderPhone;
       document.getElementById("track-order").scrollIntoView({ behavior: "smooth" });
-      trackingForm.requestSubmit();
+      await refreshTrackedOrder(true);
     });
 
     function renderTrackingResult(order) {
@@ -1108,19 +1102,6 @@
         if (trackedOrder && trackedOrder !== requestOrder) refreshTrackedOrder();
       }
     }
-
-    document.getElementById("tracking-form").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const form = event.currentTarget;
-      const code = form.elements.orderCode.value.trim().toUpperCase();
-      const phone = form.elements.phone.value.trim();
-      const ratingDialog = document.getElementById("rating-dialog");
-      if (trackedOrder && trackedOrder.code !== code && ratingDialog.open) ratingDialog.close();
-      ratingDismissed = false;
-      trackedOrder = { code, phone };
-      document.getElementById("tracking-result").textContent = "Checking order status…";
-      await refreshTrackedOrder(true);
-    });
 
     document.getElementById("close-rating-dialog").addEventListener("click", () => {
       document.getElementById("rating-dialog").close();
