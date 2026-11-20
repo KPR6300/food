@@ -314,10 +314,19 @@ test("configured UPI app details enable UPI-only checkout", async (context) => {
   }), /valid payment details/);
 });
 
-test("phone OTP verifies customers before returning their order history", async (context) => {
+test("phone lookup returns matching order summaries without verification or private address details", async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cloud-kitchen-my-orders-"));
   const ordersFile = path.join(directory, "orders.json");
   await fs.writeFile(ordersFile, JSON.stringify([
+    {
+      code: "AABBCCDDEF",
+      customer: { name: "First Customer", phone: "+91 98765 43210", address: "Another Example Road" },
+      items: [{ id: "egg-fried-rice", name: "Egg Fried Rice", price: 149, quantity: 2 }],
+      total: 298,
+      status: "received",
+      paymentMethod: "upi",
+      createdAt: "2026-11-20T11:00:00.000Z"
+    },
     {
       code: "AABBCCDDEE",
       customer: { name: "First Customer", phone: "9876543210", address: "Example Road" },
@@ -337,23 +346,9 @@ test("phone OTP verifies customers before returning their order history", async 
       createdAt: "2026-11-20T11:00:00.000Z"
     }
   ]));
-  const twilioRequests = [];
   const server = createApp({
     adminPassword: "a-unique-test-password",
-    ordersFile,
-    twilioAccountSid: "AC00000000000000000000000000000000",
-    twilioAuthToken: "test-auth-token",
-    twilioVerifyServiceSid: "VA00000000000000000000000000000000",
-    fetchImpl: async (url, options) => {
-      const fields = new URLSearchParams(options.body);
-      twilioRequests.push({ url, fields, authorization: options.headers.Authorization });
-      const isCheck = url.endsWith("/VerificationCheck");
-      const status = !isCheck ? "pending" : fields.get("Code") === "123456" ? "approved" : "pending";
-      return new Response(JSON.stringify({ status }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      });
-    }
+    ordersFile
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   context.after(async () => {
@@ -362,41 +357,30 @@ test("phone OTP verifies customers before returning their order history", async 
   });
 
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
-  const sendCode = await fetch(`${baseUrl}/api/customer/orders/send-code`, {
+  const lookup = (phone) => fetch(`${baseUrl}/api/customer/orders/lookup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ phone: "+91 98765 43210" })
+    body: JSON.stringify({ phone })
   });
-  assert.equal(sendCode.status, 200);
-  assert.equal(twilioRequests[0].fields.get("To"), "+919876543210");
-  assert.equal(twilioRequests[0].fields.get("Channel"), "sms");
+  const invalidNumber = await lookup("123");
+  assert.equal(invalidNumber.status, 400);
 
-  const unknownNumber = await fetch(`${baseUrl}/api/customer/orders/send-code`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ phone: "9123456789" })
-  });
-  assert.equal(unknownNumber.status, 200);
-  assert.equal(twilioRequests.length, 1);
-
-  const invalidCode = await fetch(`${baseUrl}/api/customer/orders/verify-code`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ phone: "9876543210", code: "000000" })
-  });
-  assert.equal(invalidCode.status, 401);
-
-  const verified = await fetch(`${baseUrl}/api/customer/orders/verify-code`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ phone: "9876543210", code: "123456" })
-  });
-  assert.equal(verified.status, 200);
-  const history = await verified.json();
-  assert.deepEqual(history.orders.map((order) => order.code), ["AABBCCDDEE"]);
-  assert.equal(history.orders[0].statusLabel, "Delivered");
+  const response = await lookup("+91 98765 43210");
+  assert.equal(response.status, 200);
+  const history = await response.json();
+  assert.deepEqual(history.orders.map((order) => order.code), ["AABBCCDDEF", "AABBCCDDEE"]);
+  assert.equal(history.orders[1].statusLabel, "Delivered");
   assert.equal(Object.hasOwn(history.orders[0], "customer"), false);
-  assert.equal(twilioRequests.length, 3);
+  assert.equal(JSON.stringify(history).includes("Example Road"), false);
+
+  for (let attempt = 1; attempt < 10; attempt += 1) {
+    assert.equal((await lookup("+91 98765 43210")).status, 200);
+  }
+  assert.equal((await lookup("+91 98765 43210")).status, 429);
+
+  const noOrders = await lookup("9123456789");
+  assert.equal(noOrders.status, 200);
+  assert.deepEqual((await noOrders.json()).orders, []);
 });
 
 test("owner menu availability survives a server restart", async (context) => {

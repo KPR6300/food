@@ -40,7 +40,7 @@ function normalizePhone(phone) {
   return phone.replace(/\D/g, "");
 }
 
-function normalizeTwilioPhone(phone) {
+function normalizeCustomerPhone(phone) {
   if (typeof phone !== "string") return null;
   const trimmed = phone.trim();
   const digits = normalizePhone(trimmed);
@@ -195,11 +195,7 @@ function createApp({
   upiPayeeName,
   ordersFile = path.join(ROOT, "data", "orders.json"),
   availabilityFile = path.join(path.dirname(ordersFile), "menu-availability.json"),
-  secureCookies = false,
-  twilioAccountSid,
-  twilioAuthToken,
-  twilioVerifyServiceSid,
-  fetchImpl = globalThis.fetch
+  secureCookies = false
 } = {}) {
   if (typeof adminPassword !== "string" || adminPassword.length < 12) {
     throw new Error("Set ADMIN_PASSWORD to a password with at least 12 characters.");
@@ -213,23 +209,13 @@ function createApp({
   const upiPayment = hasUpiDetails
     ? { upiId, payeeName: upiPayeeName.trim() }
     : null;
-  const twilioSettings = [twilioAccountSid, twilioAuthToken, twilioVerifyServiceSid];
-  const hasTwilioSettings = twilioSettings.some(Boolean);
-  if (hasTwilioSettings && twilioSettings.some((setting) => typeof setting !== "string" || !setting.trim())) {
-    throw new Error("Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_VERIFY_SERVICE_SID together.");
-  }
-  if (hasTwilioSettings && typeof fetchImpl !== "function") {
-    throw new Error("A fetch implementation is required for phone verification.");
-  }
-
   let orders;
   let availability;
   let mutationQueue = Promise.resolve();
   let settingsMutationQueue = Promise.resolve();
   const sessions = new Map();
   const loginAttempts = new Map();
-  const otpSendAttempts = new Map();
-  const otpCheckAttempts = new Map();
+  const customerOrderLookupAttempts = new Map();
   const ordersReady = fs.readFile(ordersFile, "utf8")
     .then((contents) => {
       orders = JSON.parse(contents);
@@ -301,29 +287,6 @@ function createApp({
     return true;
   }
 
-  async function callTwilioVerify(resource, fields) {
-    const response = await fetchImpl(
-      `https://verify.twilio.com/v2/Services/${encodeURIComponent(twilioVerifyServiceSid)}/${resource}`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${Buffer.from(`${twilioAccountSid}:${twilioAuthToken}`).toString("base64")}`,
-          "Content-Type": "application/x-www-form-urlencoded"
-        },
-        body: new URLSearchParams(fields).toString()
-      }
-    );
-    if (!response.ok) {
-      const isInvalidCode = resource === "VerificationCheck" && [400, 404].includes(response.status);
-      const error = new Error(isInvalidCode
-        ? "The verification code is incorrect or expired."
-        : "The phone verification service is unavailable. Please try again later.");
-      error.status = isInvalidCode ? 401 : 503;
-      throw error;
-    }
-    return response.json();
-  }
-
   return http.createServer(async (request, response) => {
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -363,58 +326,21 @@ function createApp({
         });
       }
 
-      if (request.method === "POST" && url.pathname === "/api/customer/orders/send-code") {
+      if (request.method === "POST" && url.pathname === "/api/customer/orders/lookup") {
         const body = await readJsonBody(request);
         const phone = body && typeof body.phone === "string" ? body.phone.trim() : "";
         const phoneDigits = normalizePhone(phone);
-        const phoneE164 = normalizeTwilioPhone(phone);
-        if (!phoneDigits || !phoneE164) {
-          return sendJson(response, 400, { error: "Enter a valid phone number, including the country code if needed." });
+        if (!normalizeCustomerPhone(phone)) {
+          return sendJson(response, 400, { error: "Enter a valid mobile number, including the country code if needed." });
         }
-        if (!hasTwilioSettings) {
-          return sendJson(response, 503, { error: "Phone verification is not configured yet." });
-        }
-        await ordersReady;
-        const attemptKey = `${request.socket.remoteAddress || "unknown"}:${phoneIdentity(phoneDigits)}`;
-        if (!allowLimitedAttempt(otpSendAttempts, attemptKey, 3, 15 * 60_000)) {
-          return sendJson(response, 429, { error: "Too many verification codes requested. Try again in 15 minutes." });
-        }
-        const hasOrders = orders.some((order) =>
-          order.customer && typeof order.customer.phone === "string" &&
-          phonesMatch(order.customer.phone, phoneDigits));
-        if (hasOrders) {
-          await callTwilioVerify("Verifications", { To: phoneE164, Channel: "sms" });
-        }
-        return sendJson(response, 200, {
-          ok: true,
-          message: "If this number has previous orders, a verification code has been sent."
-        });
-      }
-
-      if (request.method === "POST" && url.pathname === "/api/customer/orders/verify-code") {
-        const body = await readJsonBody(request);
-        const phone = body && typeof body.phone === "string" ? body.phone.trim() : "";
-        const phoneDigits = normalizePhone(phone);
-        const phoneE164 = normalizeTwilioPhone(phone);
-        const code = body && typeof body.code === "string" ? body.code.trim() : "";
-        if (!phoneDigits || !phoneE164) {
-          return sendJson(response, 400, { error: "Enter a valid phone number, including the country code if needed." });
-        }
-        if (!/^\d{4,10}$/.test(code)) {
-          return sendJson(response, 400, { error: "Enter the verification code from your SMS." });
-        }
-        if (!hasTwilioSettings) {
-          return sendJson(response, 503, { error: "Phone verification is not configured yet." });
-        }
-        const attemptKey = `${request.socket.remoteAddress || "unknown"}:${phoneIdentity(phoneDigits)}`;
-        if (!allowLimitedAttempt(otpCheckAttempts, attemptKey, 6, 15 * 60_000)) {
-          return sendJson(response, 429, { error: "Too many verification attempts. Try again in 15 minutes." });
+        const ip = request.socket.remoteAddress || "unknown";
+        const ipAttemptKey = `${ip}:customer-orders`;
+        const phoneAttemptKey = `${ip}:customer-orders:${phoneIdentity(phoneDigits)}`;
+        if (!allowLimitedAttempt(customerOrderLookupAttempts, ipAttemptKey, 30, 15 * 60_000) ||
+            !allowLimitedAttempt(customerOrderLookupAttempts, phoneAttemptKey, 10, 15 * 60_000)) {
+          return sendJson(response, 429, { error: "Too many order searches. Try again in 15 minutes." });
         }
         await ordersReady;
-        const verification = await callTwilioVerify("VerificationCheck", { To: phoneE164, Code: code });
-        if (verification.status !== "approved") {
-          return sendJson(response, 401, { error: "The verification code is incorrect or expired." });
-        }
         const customerOrders = orders
           .filter((order) =>
             order.customer && typeof order.customer.phone === "string" &&
@@ -617,9 +543,6 @@ if (require.main === module) {
     adminPassword: process.env.ADMIN_PASSWORD,
     upiId: process.env.UPI_ID,
     upiPayeeName: process.env.UPI_PAYEE_NAME,
-    twilioAccountSid: process.env.TWILIO_ACCOUNT_SID,
-    twilioAuthToken: process.env.TWILIO_AUTH_TOKEN,
-    twilioVerifyServiceSid: process.env.TWILIO_VERIFY_SERVICE_SID,
     ordersFile: process.env.ORDERS_FILE ? path.resolve(process.env.ORDERS_FILE) : undefined,
     secureCookies: process.env.NODE_ENV === "production"
   });

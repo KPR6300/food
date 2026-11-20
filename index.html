@@ -228,7 +228,7 @@
     .order-code { margin: 12px 0; padding: 13px; border-radius: 12px; background: #f5f0e9; font-size: 1.4rem; font-weight: 850; letter-spacing: .12em; }
     .tracking-section { padding: 58px 0; }
     .tracking-card { max-width: 720px; margin-inline: auto; padding: 29px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper); }
-    .tracking-form { display: grid; grid-template-columns: 1fr 1fr auto; align-items: end; gap: 12px; margin-top: 18px; }
+    .tracking-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; margin-top: 18px; }
     .tracking-form[hidden] { display: none; }
     .tracking-form .button { min-height: 44px; padding: 11px 16px; }
     .tracking-result { margin-top: 17px; }
@@ -503,15 +503,10 @@
       <div class="tracking-card">
         <span class="section-kicker">Your order history</span>
         <h2>My orders.</h2>
-        <p style="color:var(--muted); margin:9px 0 0">Verify your phone number to securely see your previous orders.</p>
-        <form class="tracking-form" id="my-orders-request-form">
+        <p style="color:var(--muted); margin:9px 0 0">Enter the mobile number used at checkout to find its orders. Order history is available to anyone who knows this number.</p>
+        <form class="tracking-form" id="my-orders-lookup-form">
           <label>Phone number<input name="phone" type="tel" autocomplete="tel" required maxlength="20" placeholder="Phone used for your orders"></label>
-          <button class="button button-primary" type="submit">Send verification code</button>
-        </form>
-        <form class="tracking-form" id="my-orders-verify-form" hidden>
-          <label>SMS verification code<input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" required minlength="4" maxlength="10" pattern="[0-9]{4,10}" placeholder="Enter code"></label>
-          <button class="button button-primary" type="submit">Verify and view orders</button>
-          <button class="button button-secondary" id="change-orders-phone" type="button">Use another number</button>
+          <button class="button button-primary" type="submit">Show my orders</button>
         </form>
         <div class="tracking-result" id="my-orders-status" role="status" aria-live="polite"></div>
         <div class="my-orders-list" id="my-orders-list"></div>
@@ -1141,55 +1136,24 @@
       }
     });
 
-    let myOrdersPhone = "";
-    const myOrdersRequestForm = document.getElementById("my-orders-request-form");
-    const myOrdersVerifyForm = document.getElementById("my-orders-verify-form");
+    const myOrdersLookupForm = document.getElementById("my-orders-lookup-form");
     const myOrdersStatus = document.getElementById("my-orders-status");
     const myOrdersList = document.getElementById("my-orders-list");
 
-    myOrdersRequestForm.addEventListener("submit", async (event) => {
+    myOrdersLookupForm.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const button = myOrdersRequestForm.querySelector('button[type="submit"]');
+      const button = myOrdersLookupForm.querySelector('button[type="submit"]');
       button.disabled = true;
-      myOrdersStatus.textContent = "Sending verification code…";
+      myOrdersStatus.textContent = "Looking up your orders…";
       myOrdersList.replaceChildren();
       try {
-        const response = await fetch("/api/customer/orders/send-code", {
+        const response = await fetch("/api/customer/orders/lookup", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ phone: myOrdersRequestForm.elements.phone.value.trim() })
+          body: JSON.stringify({ phone: myOrdersLookupForm.elements.phone.value.trim() })
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "We couldn't send a verification code.");
-        myOrdersPhone = myOrdersRequestForm.elements.phone.value.trim();
-        myOrdersRequestForm.hidden = true;
-        myOrdersVerifyForm.hidden = false;
-        myOrdersStatus.textContent = data.message;
-        myOrdersVerifyForm.elements.code.focus();
-      } catch (requestError) {
-        myOrdersStatus.textContent = requestError.message || "Unable to send a verification code. Please try again.";
-      } finally {
-        button.disabled = false;
-      }
-    });
-
-    myOrdersVerifyForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const button = myOrdersVerifyForm.querySelector('button[type="submit"]');
-      button.disabled = true;
-      myOrdersStatus.textContent = "Verifying your number…";
-      myOrdersList.replaceChildren();
-      try {
-        const response = await fetch("/api/customer/orders/verify-code", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            phone: myOrdersPhone,
-            code: myOrdersVerifyForm.elements.code.value.trim()
-          })
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "We couldn't verify your number.");
+        if (!response.ok) throw new Error(data.error || "We couldn't look up those orders.");
         if (data.orders.length === 0) {
           myOrdersStatus.textContent = "No previous orders were found for this number.";
           return;
@@ -1222,19 +1186,10 @@
           myOrdersList.append(card);
         }
       } catch (requestError) {
-        myOrdersStatus.textContent = requestError.message || "Unable to verify your number. Please try again.";
+        myOrdersStatus.textContent = requestError.message || "Unable to look up orders. Please try again.";
       } finally {
         button.disabled = false;
       }
-    });
-
-    document.getElementById("change-orders-phone").addEventListener("click", () => {
-      myOrdersVerifyForm.reset();
-      myOrdersVerifyForm.hidden = true;
-      myOrdersRequestForm.hidden = false;
-      myOrdersStatus.textContent = "";
-      myOrdersList.replaceChildren();
-      myOrdersPhone = "";
     });
 
     window.setInterval(() => {
