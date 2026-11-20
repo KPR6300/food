@@ -15,6 +15,13 @@ test("owner dashboard inline script is valid JavaScript", async () => {
   assert.doesNotThrow(() => new vm.Script(scripts[0][1]));
 });
 
+test("customer page inline script is valid JavaScript", async () => {
+  const html = await fs.readFile(path.join(__dirname, "index.html"), "utf8");
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  assert.equal(scripts.length, 1);
+  assert.doesNotThrow(() => new vm.Script(scripts[0][1]));
+});
+
 test("COD and UPI orders enforce menu availability and owner settings", async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cloud-kitchen-"));
   const ordersFile = path.join(directory, "orders.json");
