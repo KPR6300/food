@@ -227,6 +227,7 @@
         paymentDetails.className = "payment-reference";
         paymentDetails.textContent = order.paymentMethod === "cash_on_delivery"
           ? "Cash on delivery"
+          : "UPI";
         const paymentStatus = document.createElement("select");
         paymentStatus.className = "payment-status";
         paymentStatus.setAttribute("aria-label", `Payment verification for order ${order.code}`);
