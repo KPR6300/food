@@ -200,14 +200,16 @@ function createApp({
   if (typeof adminPassword !== "string" || adminPassword.length < 12) {
     throw new Error("Set ADMIN_PASSWORD to a password with at least 12 characters.");
   }
-  const hasUpiDetails = Boolean(upiId || upiPayeeName);
+  const normalizedUpiId = typeof upiId === "string" ? upiId.trim() : "";
+  const normalizedPayeeName = typeof upiPayeeName === "string" ? upiPayeeName.trim() : "";
+  const hasUpiDetails = Boolean(normalizedUpiId || normalizedPayeeName);
   if (hasUpiDetails &&
-      (typeof upiId !== "string" || !/^[A-Za-z0-9._-]{2,64}@[A-Za-z0-9.-]{2,64}$/.test(upiId) ||
-       typeof upiPayeeName !== "string" || upiPayeeName.trim().length < 2 || upiPayeeName.trim().length > 80)) {
+      (!normalizedUpiId || !/^[A-Za-z0-9._-]{2,64}@[A-Za-z0-9.-]{2,64}$/.test(normalizedUpiId) ||
+       normalizedPayeeName.length < 2 || normalizedPayeeName.length > 80)) {
     throw new Error("UPI_ID and UPI_PAYEE_NAME must be valid payment details.");
   }
   const upiPayment = hasUpiDetails
-    ? { upiId, payeeName: upiPayeeName.trim() }
+    ? { upiId: normalizedUpiId, payeeName: normalizedPayeeName }
     : null;
   let orders;
   let availability;

@@ -197,6 +197,7 @@
     .map-marker span { transform: rotate(45deg); }
     .checkout-payment { display: grid; justify-items: center; gap: 8px; padding: 13px; border-radius: 13px; background: #f5f0e9; text-align: center; font-size: .82rem; }
     .checkout-payment .button[hidden] { display: none; }
+    .copy-upi-button { min-height: 36px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 999px; background: white; color: var(--green); font-size: .78rem; font-weight: 800; }
     .checkout-payment-note { margin: 0; color: var(--muted); font-size: .75rem; }
     .payment-methods { display: grid; gap: 8px; }
     .payment-option { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 12px; background: white; font-size: .82rem; font-weight: 750; }
@@ -535,8 +536,9 @@
         <div class="checkout-payment">
           <strong>Pay using your UPI app</strong>
           <strong id="checkout-payment-amount">Order total: ₹0</strong>
-          <a class="button button-primary" id="open-upi-app" href="#" target="_blank" rel="noopener noreferrer" hidden>Open UPI app</a>
+          <a class="button button-primary" id="open-upi-app" href="#" hidden>Open UPI app</a>
           <span id="checkout-payee"></span>
+          <button class="copy-upi-button" id="copy-upi-id" type="button" hidden>Copy UPI ID</button>
           <p class="checkout-payment-note">Complete the payment in your UPI app, then return here to place the order.</p>
         </div>
         </div>
@@ -824,6 +826,7 @@
           ? "Remove unavailable items from your bag before continuing."
           : "Enter your delivery details and choose UPI or cash on delivery.";
       const upiLink = document.getElementById("open-upi-app");
+      const copyUpiButton = document.getElementById("copy-upi-id");
       if (upiPayment) {
         const parameters = new URLSearchParams({
           pa: upiPayment.upiId,
@@ -831,14 +834,16 @@
           am: String(subtotal),
           cu: "INR",
           tn: "Bhargavi Cloud order",
-          url: `${window.location.origin}/#checkout`
+          tr: `BC${Date.now()}`
         });
         upiLink.href = `upi://pay?${parameters.toString()}`;
         upiLink.textContent = `Pay ₹${subtotal} in UPI app`;
         upiLink.hidden = false;
+        copyUpiButton.hidden = false;
       } else {
         upiLink.removeAttribute("href");
         upiLink.hidden = true;
+        copyUpiButton.hidden = true;
       }
     }
 
@@ -948,6 +953,18 @@
         invalidField[0].setCustomValidity(invalidField[1]);
         invalidField[0].reportValidity();
         event.preventDefault();
+      }
+    });
+
+    document.getElementById("copy-upi-id").addEventListener("click", async () => {
+      if (!upiPayment) return;
+      const button = document.getElementById("copy-upi-id");
+      try {
+        await navigator.clipboard.writeText(upiPayment.upiId);
+        button.textContent = "UPI ID copied";
+        window.setTimeout(() => { button.textContent = "Copy UPI ID"; }, 1800);
+      } catch {
+        showToast(`UPI ID: ${upiPayment.upiId}`);
       }
     });
 
