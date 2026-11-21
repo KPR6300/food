@@ -383,6 +383,66 @@ test("phone lookup returns matching order summaries without verification or priv
   assert.deepEqual((await noOrders.json()).orders, []);
 });
 
+test("customer can delete only their matching order", async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cloud-kitchen-delete-order-"));
+  const ordersFile = path.join(directory, "orders.json");
+  await fs.writeFile(ordersFile, JSON.stringify([
+    {
+      code: "AABBCCDDEE",
+      customer: { name: "First Customer", phone: "9876543210", address: "Example Road" },
+      items: [{ id: "butter-paneer", name: "Butter Paneer Bowl", price: 289, quantity: 1 }],
+      total: 289,
+      status: "received",
+      paymentMethod: "cash_on_delivery",
+      createdAt: "2026-11-20T10:00:00.000Z"
+    },
+    {
+      code: "1122334455",
+      customer: { name: "Another Customer", phone: "9999999999", address: "Other Road" },
+      items: [{ id: "egg-fried-rice", name: "Egg Fried Rice", price: 149, quantity: 1 }],
+      total: 149,
+      status: "received",
+      paymentMethod: "upi",
+      createdAt: "2026-11-20T11:00:00.000Z"
+    }
+  ]));
+  const server = createApp({
+    adminPassword: "a-unique-test-password",
+    ordersFile
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  context.after(async () => {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const wrongPhone = await fetch(`${baseUrl}/api/orders/AABBCCDDEE`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone: "9999999999" })
+  });
+  assert.equal(wrongPhone.status, 404);
+
+  const deleted = await fetch(`${baseUrl}/api/orders/AABBCCDDEE`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone: "+91 98765 43210" })
+  });
+  assert.equal(deleted.status, 200);
+
+  const persistedOrders = JSON.parse(await fs.readFile(ordersFile, "utf8"));
+  assert.deepEqual(persistedOrders.map((order) => order.code), ["1122334455"]);
+
+  const lookup = await fetch(`${baseUrl}/api/customer/orders/lookup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone: "9876543210" })
+  });
+  assert.equal(lookup.status, 200);
+  assert.deepEqual((await lookup.json()).orders, []);
+});
+
 test("owner menu availability survives a server restart", async (context) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cloud-kitchen-availability-"));
   const ordersFile = path.join(directory, "orders.json");
