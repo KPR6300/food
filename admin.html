@@ -102,6 +102,7 @@
         <div style="display:flex;gap:9px;flex-wrap:wrap">
           <div class="notification-controls">
             <button class="button button-secondary" id="order-sound-button" type="button">Enable order sound</button>
+            <button class="button button-secondary" id="order-sound-disable-button" type="button" disabled>Disable order sound</button>
             <span class="notification-status" id="order-sound-status" role="status">Sound is off</span>
           </div>
           <button class="button button-secondary" id="refresh-button" type="button">Refresh orders</button>
@@ -118,6 +119,7 @@
     const ordersContainer = document.getElementById("orders");
     const menuContainer = document.getElementById("menu-items");
     const orderSoundButton = document.getElementById("order-sound-button");
+    const orderSoundDisableButton = document.getElementById("order-sound-disable-button");
     const orderSoundStatus = document.getElementById("order-sound-status");
     let orderAudioContext = null;
     let orderSoundEnabled = false;
@@ -162,6 +164,19 @@
         oscillator.start(startAt + offset);
         oscillator.stop(startAt + offset + 0.21);
       }
+    }
+
+    function announceNewOrder(newOrders) {
+      playOrderSound();
+      if (!orderSoundEnabled || !("speechSynthesis" in window)) return;
+      if (window.speechSynthesis.speaking) window.speechSynthesis.cancel();
+      const message = newOrders.length === 1
+        ? `New order received. Order ${newOrders[0].code}, total rupees ${newOrders[0].total}.`
+        : `${newOrders.length} new orders received.`;
+      const announcement = new SpeechSynthesisUtterance(message);
+      announcement.rate = 0.95;
+      announcement.pitch = 1;
+      window.speechSynthesis.speak(announcement);
     }
 
     function renderOrders(orders) {
@@ -302,9 +317,10 @@
     async function loadOrders() {
       const data = await api("/api/admin/orders");
       const currentOrderCodes = new Set(data.orders.map((order) => order.code));
-      if (knownOrderCodes !== null &&
-          data.orders.some((order) => order.status === "received" && !knownOrderCodes.has(order.code))) {
-        playOrderSound();
+      if (knownOrderCodes !== null) {
+        const newOrders = data.orders.filter((order) =>
+          order.status === "received" && !knownOrderCodes.has(order.code));
+        if (newOrders.length > 0) announceNewOrder(newOrders);
       }
       knownOrderCodes = currentOrderCodes;
       renderOrders(data.orders);
@@ -408,12 +424,22 @@
         orderSoundEnabled = true;
         orderSoundButton.textContent = "Order sound enabled";
         orderSoundButton.disabled = true;
+        orderSoundDisableButton.disabled = false;
         orderSoundStatus.textContent = "New received orders will play a sound.";
         playOrderSound();
       } catch (error) {
         orderSoundStatus.textContent = "Could not enable sound. Check your browser audio settings.";
         console.error("Could not enable order notification sound:", error);
       }
+    });
+
+    orderSoundDisableButton.addEventListener("click", () => {
+      orderSoundEnabled = false;
+      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+      orderSoundButton.textContent = "Enable order sound";
+      orderSoundButton.disabled = false;
+      orderSoundDisableButton.disabled = true;
+      orderSoundStatus.textContent = "Sound is off";
     });
 
     document.getElementById("logout-button").addEventListener("click", async () => {
