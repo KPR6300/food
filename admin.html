@@ -175,7 +175,7 @@
         : `${newOrders.length} new orders received.`;
       const announcement = new SpeechSynthesisUtterance(message);
       announcement.rate = 0.95;
-      announcement.pitch = 3;
+      announcement.pitch = 0.5;
       window.speechSynthesis.speak(announcement);
     }
 
