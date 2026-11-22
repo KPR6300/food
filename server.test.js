@@ -82,6 +82,12 @@ test("COD and UPI orders enforce menu availability and owner settings", async (c
     body: JSON.stringify({ available: true })
   });
   assert.equal(availability.status, 200);
+  const unavailableChicken = await fetch(`${baseUrl}/api/admin/menu/chicken-biryani-full/availability`, {
+    method: "PATCH",
+    headers: { Cookie: cookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ available: false })
+  });
+  assert.equal(unavailableChicken.status, 200);
   const removedQrUpload = await fetch(`${baseUrl}/api/admin/payment-qr`, {
     method: "PUT",
     headers: { Cookie: cookie, "Content-Type": "application/json" },

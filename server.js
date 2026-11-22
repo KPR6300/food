@@ -243,7 +243,11 @@ function createApp({
           throw new Error(`Availability for ${id} must be true or false.`);
         }
         const wasLegacyBiryani = id === "chicken-biryani-full" || id === "chicken-biryani-mini";
-        return [id, saved[id] === true || (saved[id] === undefined && wasLegacyBiryani && legacyBiryaniAvailable)];
+        if (saved[id] !== undefined) return [id, saved[id]];
+        if (wasLegacyBiryani && saved["chicken-biryani"] !== undefined) {
+          return [id, legacyBiryaniAvailable];
+        }
+        return [id, false];
       }));
     })
     .catch((error) => {

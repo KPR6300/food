@@ -17,7 +17,7 @@ Open `http://localhost:3000` for customers and `http://localhost:3000/admin` for
 
 ## Owner setup
 
-Sign in to `/admin` and tick the menu items that are available. Set `UPI_ID` and `UPI_PAYEE_NAME` when starting the server to enable checkout through a UPI app. At least one available dish and valid UPI settings are needed to accept orders. Unticked dishes remain visible on the menu as unavailable.
+Sign in to `/admin` and tick menu items that are available. Set `UPI_ID` and `UPI_PAYEE_NAME` when starting the server to enable checkout through a UPI app. All dishes start unavailable until the owner explicitly marks them available. Availability changes remain saved across server restarts.
 
 After entering their delivery details, customers can open a UPI app with the order amount and recipient prefilled. App launching requires a compatible device. The kitchen must verify the payment in its UPI app and mark it verified in the dashboard. This site does not automatically verify payments.
 
@@ -33,6 +33,6 @@ Orders and menu availability are saved under `data/`. Keep this directory on per
 
 Deploy this folder to a Node.js host that supports persistent storage. On Render, add `ADMIN_PASSWORD` (at least 12 characters), `UPI_ID`, `UPI_PAYEE_NAME`, and `NODE_ENV=production` under the service's **Environment** settings, then redeploy. `UPI_ID` must be a valid UPI address and both UPI settings are required to enable checkout. Sign in to `/admin` after deploying and mark at least one menu item available; on a fresh instance, all dishes start unavailable. If the host's default disk is temporary, set `ORDERS_FILE` to a persistent disk location; menu availability is saved alongside it. Use HTTPS in production. The owner dashboard signs out when the server restarts.
 
-UPI app payments are the only payment option. Update the sample menu, address, and delivery areas in `index.html` before going live.
+UPI app payments are the only payment option. Update the menu, address, and delivery areas in `index.html` before going live.
 
 Run checks with `npm test`.
