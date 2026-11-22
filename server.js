@@ -414,27 +414,6 @@ function createApp({
         return sendJson(response, 201, { rating: result.rating });
       }
 
-      const customerDeleteMatch = url.pathname.match(/^\/api\/orders\/([A-Fa-f0-9]{10})$/);
-      if (request.method === "DELETE" && customerDeleteMatch) {
-        const body = await readJsonBody(request);
-        const phone = body && typeof body.phone === "string" ? normalizePhone(body.phone) : "";
-        if (phone.length < 10 || phone.length > 15) {
-          return sendJson(response, 400, { error: "Enter the phone number used for this order." });
-        }
-        const deleted = await mutateOrders((savedOrders) => {
-          const index = savedOrders.findIndex((entry) =>
-            entry.code === customerDeleteMatch[1].toUpperCase() &&
-            entry.customer &&
-            typeof entry.customer.phone === "string" &&
-            phonesMatch(entry.customer.phone, phone));
-          if (index === -1) return false;
-          savedOrders.splice(index, 1);
-          return true;
-        });
-        if (!deleted) return sendJson(response, 404, { error: "We couldn't find an order matching those details." });
-        return sendJson(response, 200, { ok: true });
-      }
-
       if (request.method === "POST" && url.pathname === "/api/admin/login") {
         const ip = request.socket.remoteAddress || "unknown";
         const attempt = loginAttempts.get(ip);
