@@ -31,6 +31,8 @@
     .button-secondary { background:white; border:1px solid var(--line); color:var(--ink); }
     .button-secondary:hover { background:#f7f2eb; }
     .login-card .button { width:100%; }
+    .notification-controls { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .notification-status { margin:0; color:var(--muted); font-size:.8rem; }
     .error { min-height:1.3em; margin:9px 0; color:var(--red); font-size:.84rem; }
     [hidden] { display:none !important; }
     .dashboard-heading { display:flex; align-items:end; justify-content:space-between; gap:18px; margin:35px 0 20px; }
@@ -98,6 +100,10 @@
       <div class="dashboard-heading">
         <h2>Recent orders</h2>
         <div style="display:flex;gap:9px;flex-wrap:wrap">
+          <div class="notification-controls">
+            <button class="button button-secondary" id="order-sound-button" type="button">Enable order sound</button>
+            <span class="notification-status" id="order-sound-status" role="status">Sound is off</span>
+          </div>
           <button class="button button-secondary" id="refresh-button" type="button">Refresh orders</button>
           <button class="button button-secondary" id="logout-button" type="button">Sign out</button>
         </div>
@@ -111,6 +117,11 @@
     const dashboardView = document.getElementById("dashboard-view");
     const ordersContainer = document.getElementById("orders");
     const menuContainer = document.getElementById("menu-items");
+    const orderSoundButton = document.getElementById("order-sound-button");
+    const orderSoundStatus = document.getElementById("order-sound-status");
+    let orderAudioContext = null;
+    let orderSoundEnabled = false;
+    let knownOrderCodes = null;
     const statuses = [
       ["received", "Order received"],
       ["confirmed", "Confirmed"],
@@ -133,6 +144,24 @@
         throw error;
       }
       return body;
+    }
+
+    function playOrderSound() {
+      if (!orderAudioContext || !orderSoundEnabled) return;
+      const startAt = orderAudioContext.currentTime;
+      for (const [offset, frequency] of [[0, 880], [0.22, 1175]]) {
+        const oscillator = orderAudioContext.createOscillator();
+        const gain = orderAudioContext.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.value = frequency;
+        gain.gain.setValueAtTime(0.0001, startAt + offset);
+        gain.gain.exponentialRampToValueAtTime(0.18, startAt + offset + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, startAt + offset + 0.2);
+        oscillator.connect(gain);
+        gain.connect(orderAudioContext.destination);
+        oscillator.start(startAt + offset);
+        oscillator.stop(startAt + offset + 0.21);
+      }
     }
 
     function renderOrders(orders) {
@@ -272,6 +301,12 @@
 
     async function loadOrders() {
       const data = await api("/api/admin/orders");
+      const currentOrderCodes = new Set(data.orders.map((order) => order.code));
+      if (knownOrderCodes !== null &&
+          data.orders.some((order) => order.status === "received" && !knownOrderCodes.has(order.code))) {
+        playOrderSound();
+      }
+      knownOrderCodes = currentOrderCodes;
       renderOrders(data.orders);
       document.getElementById("dashboard-error").textContent = "";
     }
@@ -358,6 +393,26 @@
         await loadOrders();
       } catch (error) {
         document.getElementById("dashboard-error").textContent = error.message;
+      }
+    });
+
+    orderSoundButton.addEventListener("click", async () => {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) {
+        orderSoundStatus.textContent = "This browser does not support notification sound.";
+        return;
+      }
+      try {
+        if (!orderAudioContext) orderAudioContext = new AudioContext();
+        await orderAudioContext.resume();
+        orderSoundEnabled = true;
+        orderSoundButton.textContent = "Order sound enabled";
+        orderSoundButton.disabled = true;
+        orderSoundStatus.textContent = "New received orders will play a sound.";
+        playOrderSound();
+      } catch (error) {
+        orderSoundStatus.textContent = "Could not enable sound. Check your browser audio settings.";
+        console.error("Could not enable order notification sound:", error);
       }
     });
 
