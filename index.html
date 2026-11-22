@@ -449,9 +449,13 @@
       <div class="tracking-card">
         <span class="section-kicker">Order updates</span>
         <h2>Your order status.</h2>
-        <p style="color:var(--muted); margin:9px 0 0">Your current order appears here automatically and updates while this page is open. Visit My orders to see previous orders.</p>
+        <p style="color:var(--muted); margin:9px 0 0">Enter the mobile number used at checkout to find and check your latest order.</p>
+        <form class="tracking-form" id="order-status-form">
+          <label>Phone number<input name="phone" type="tel" autocomplete="tel" required maxlength="20" placeholder="Mobile number used for your order"></label>
+          <button class="button button-primary" type="submit">Check status</button>
+        </form>
         <div class="tracking-result" id="tracking-result" role="status" aria-live="polite">
-          <p>Place an order to see its status here. You won’t need an order code or phone number.</p>
+          <p>Enter your mobile number to check the latest order.</p>
         </div>
       </div>
     </section>
@@ -987,6 +991,7 @@
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "We couldn't place that order.");
         trackedOrder = { code: result.order.code, phone: form.elements.phone.value };
+        document.querySelector('#order-status-form [name="phone"]').value = form.elements.phone.value;
         ratingDismissed = false;
         cart.clear();
         renderCart();
@@ -1009,6 +1014,36 @@
       cartDialog.close();
       document.getElementById("track-order").scrollIntoView({ behavior: "smooth" });
       await refreshTrackedOrder(true);
+    });
+
+    document.getElementById("order-status-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const button = form.querySelector('button[type="submit"]');
+      const result = document.getElementById("tracking-result");
+      const phone = form.elements.phone.value.trim();
+      button.disabled = true;
+      result.textContent = "Looking for your latest order…";
+      try {
+        const response = await fetch("/api/customer/orders/lookup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phone })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "We couldn't look up your order.");
+        if (data.orders.length === 0) {
+          trackedOrder = null;
+          result.textContent = "No orders were found for this mobile number.";
+          return;
+        }
+        trackedOrder = { code: data.orders[0].code, phone };
+        await refreshTrackedOrder(true);
+      } catch (requestError) {
+        result.textContent = requestError.message || "Unable to check your order. Please try again.";
+      } finally {
+        button.disabled = false;
+      }
     });
 
     function renderTrackingResult(order) {
