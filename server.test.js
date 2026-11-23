@@ -76,6 +76,9 @@ test("COD and UPI orders enforce menu availability and owner settings", async (c
   assert.equal(login.status, 200);
   const cookie = login.headers.get("set-cookie").split(";")[0];
 
+  const pushConfig = await fetch(`${baseUrl}/api/admin/push/config`, { headers: { Cookie: cookie } });
+  assert.deepEqual(await pushConfig.json(), { enabled: false, publicKey: null });
+
   const availability = await fetch(`${baseUrl}/api/admin/menu/butter-paneer/availability`, {
     method: "PATCH",
     headers: { Cookie: cookie, "Content-Type": "application/json" },
@@ -237,6 +240,75 @@ test("COD and UPI orders enforce menu availability and owner settings", async (c
 
 test("owner password must be configured securely", () => {
   assert.throws(() => createApp({ adminPassword: "short" }), /at least 12 characters/);
+});
+
+test("owner push subscriptions are protected and persist across requests", async (context) => {
+  const webPushModule = await import("web-push");
+  const vapidKeys = webPushModule.generateVAPIDKeys();
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cloud-kitchen-push-"));
+  const server = createApp({
+    adminPassword: "a-unique-test-password",
+    ordersFile: path.join(directory, "orders.json"),
+    pushSubscriptionsFile: path.join(directory, "push-subscriptions.json"),
+    pushPublicKey: vapidKeys.publicKey,
+    pushPrivateKey: vapidKeys.privateKey,
+    pushSubject: "mailto:owner@example.com"
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  context.after(async () => {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const anonymousConfig = await fetch(`${baseUrl}/api/admin/push/config`);
+  assert.equal(anonymousConfig.status, 401);
+
+  const login = await fetch(`${baseUrl}/api/admin/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: "a-unique-test-password" })
+  });
+  const cookie = login.headers.get("set-cookie").split(";")[0];
+  const config = await fetch(`${baseUrl}/api/admin/push/config`, { headers: { Cookie: cookie } });
+  assert.deepEqual(await config.json(), { enabled: true, publicKey: vapidKeys.publicKey });
+
+  const invalidSubscription = await fetch(`${baseUrl}/api/admin/push/subscriptions`, {
+    method: "POST",
+    headers: { Cookie: cookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint: "http://push.example.test", keys: { p256dh: "key", auth: "key" } })
+  });
+  assert.equal(invalidSubscription.status, 400);
+
+  const subscription = {
+    endpoint: "https://push.example.test/subscription",
+    keys: {
+      p256dh: Buffer.alloc(65, 1).toString("base64url"),
+      auth: Buffer.alloc(16, 2).toString("base64url")
+    }
+  };
+  const saved = await fetch(`${baseUrl}/api/admin/push/subscriptions`, {
+    method: "POST",
+    headers: { Cookie: cookie, "Content-Type": "application/json" },
+    body: JSON.stringify(subscription)
+  });
+  assert.equal(saved.status, 201);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(directory, "push-subscriptions.json"), "utf8")), [subscription]);
+
+  const worker = await fetch(`${baseUrl}/service-worker.js`);
+  assert.equal(worker.status, 200);
+  assert.match(worker.headers.get("content-type"), /javascript/);
+  const workerScript = await worker.text();
+  assert.match(workerScript, /showNotification/);
+  assert.doesNotThrow(() => new vm.Script(workerScript));
+
+  const removed = await fetch(`${baseUrl}/api/admin/push/subscriptions`, {
+    method: "DELETE",
+    headers: { Cookie: cookie, "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint: subscription.endpoint })
+  });
+  assert.equal(removed.status, 200);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(directory, "push-subscriptions.json"), "utf8")), []);
 });
 
 test("COD remains available when UPI settings are missing", async (context) => {

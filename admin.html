@@ -105,6 +105,11 @@
             <button class="button button-secondary" id="order-sound-disable-button" type="button" disabled>Disable order sound</button>
             <span class="notification-status" id="order-sound-status" role="status">Sound is off</span>
           </div>
+          <div class="notification-controls">
+            <button class="button button-secondary" id="push-enable-button" type="button">Enable lock-screen alerts</button>
+            <button class="button button-secondary" id="push-disable-button" type="button" disabled>Disable lock-screen alerts</button>
+            <span class="notification-status" id="push-status" role="status">Push alerts are not enabled.</span>
+          </div>
           <button class="button button-secondary" id="refresh-button" type="button">Refresh orders</button>
           <button class="button button-secondary" id="logout-button" type="button">Sign out</button>
         </div>
@@ -121,6 +126,9 @@
     const orderSoundButton = document.getElementById("order-sound-button");
     const orderSoundDisableButton = document.getElementById("order-sound-disable-button");
     const orderSoundStatus = document.getElementById("order-sound-status");
+    const pushEnableButton = document.getElementById("push-enable-button");
+    const pushDisableButton = document.getElementById("push-disable-button");
+    const pushStatus = document.getElementById("push-status");
     let orderAudioContext = null;
     let orderSoundEnabled = false;
     let knownOrderCodes = null;
@@ -146,6 +154,39 @@
         throw error;
       }
       return body;
+    }
+
+    function decodeApplicationServerKey(encodedKey) {
+      const base64 = encodedKey.replace(/-/g, "+").replace(/_/g, "/");
+      const raw = atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="));
+      return Uint8Array.from(raw, (character) => character.charCodeAt(0));
+    }
+
+    async function updatePushStatus() {
+      if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+        pushEnableButton.disabled = true;
+        pushStatus.textContent = "This browser does not support lock-screen push alerts.";
+        return;
+      }
+      try {
+        const config = await api("/api/admin/push/config");
+        if (!config.enabled) {
+          pushEnableButton.disabled = true;
+          pushStatus.textContent = "Server push alerts need VAPID keys configured.";
+          return;
+        }
+        pushEnableButton.disabled = false;
+        const registration = await navigator.serviceWorker.getRegistration("/");
+        const subscription = registration ? await registration.pushManager.getSubscription() : null;
+        pushDisableButton.disabled = !subscription;
+        if (subscription) pushEnableButton.disabled = true;
+        pushStatus.textContent = subscription
+          ? "Lock-screen order alerts are enabled on this device."
+          : "Enable alerts to receive orders while the dashboard is closed.";
+      } catch (error) {
+        pushStatus.textContent = error.message || "Could not check push notification settings.";
+        console.error("Could not check push notification settings:", error);
+      }
     }
 
     function playOrderSound() {
@@ -373,7 +414,7 @@
     }
 
     async function loadDashboard() {
-      await Promise.all([loadOrders(), loadMenu()]);
+      await Promise.all([loadOrders(), loadMenu(), updatePushStatus()]);
       document.getElementById("dashboard-error").textContent = "";
     }
 
@@ -440,6 +481,60 @@
       orderSoundButton.disabled = false;
       orderSoundDisableButton.disabled = true;
       orderSoundStatus.textContent = "Sound is off";
+    });
+
+    pushEnableButton.addEventListener("click", async () => {
+      pushEnableButton.disabled = true;
+      pushStatus.textContent = "Requesting notification permission…";
+      try {
+        const config = await api("/api/admin/push/config");
+        if (!config.enabled || !config.publicKey) {
+          throw new Error("Server push alerts need VAPID keys configured.");
+        }
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") {
+          throw new Error("Allow notifications in your browser settings to receive locked-device alerts.");
+        }
+        const registration = await navigator.serviceWorker.register("/service-worker.js");
+        await navigator.serviceWorker.ready;
+        let subscription = await registration.pushManager.getSubscription();
+        if (!subscription) {
+          subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: decodeApplicationServerKey(config.publicKey)
+          });
+        }
+        await api("/api/admin/push/subscriptions", {
+          method: "POST",
+          body: JSON.stringify(subscription)
+        });
+        pushEnableButton.disabled = true;
+        pushDisableButton.disabled = false;
+        pushStatus.textContent = "Lock-screen order alerts are enabled on this device.";
+      } catch (error) {
+        pushStatus.textContent = error.message || "Could not enable push alerts.";
+        pushEnableButton.disabled = false;
+      }
+    });
+
+    pushDisableButton.addEventListener("click", async () => {
+      pushDisableButton.disabled = true;
+      try {
+        const registration = await navigator.serviceWorker.getRegistration("/");
+        const subscription = registration ? await registration.pushManager.getSubscription() : null;
+        if (subscription) {
+          await api("/api/admin/push/subscriptions", {
+            method: "DELETE",
+            body: JSON.stringify({ endpoint: subscription.endpoint })
+          });
+          await subscription.unsubscribe();
+        }
+        pushStatus.textContent = "Lock-screen order alerts are disabled on this device.";
+        pushEnableButton.disabled = false;
+      } catch (error) {
+        pushStatus.textContent = error.message || "Could not disable push alerts.";
+        pushDisableButton.disabled = false;
+      }
     });
 
     document.getElementById("logout-button").addEventListener("click", async () => {

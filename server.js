@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const http = require("node:http");
 const path = require("node:path");
+const webPushReady = import("web-push");
 
 const ROOT = __dirname;
 const MENU = Object.freeze({
@@ -189,12 +190,27 @@ function parseCookies(header = "") {
   }).filter(([key]) => key));
 }
 
+function isValidPushSubject(subject) {
+  try {
+    const parsed = new URL(subject);
+    return parsed.protocol === "https:"
+      ? Boolean(parsed.hostname)
+      : parsed.protocol === "mailto:" && parsed.pathname.includes("@");
+  } catch {
+    return false;
+  }
+}
+
 function createApp({
   adminPassword,
   upiId,
   upiPayeeName,
   ordersFile = path.join(ROOT, "data", "orders.json"),
   availabilityFile = path.join(path.dirname(ordersFile), "menu-availability.json"),
+  pushSubscriptionsFile = path.join(path.dirname(ordersFile), "push-subscriptions.json"),
+  pushPublicKey,
+  pushPrivateKey,
+  pushSubject,
   secureCookies = false
 } = {}) {
   if (typeof adminPassword !== "string" || adminPassword.length < 12) {
@@ -211,10 +227,35 @@ function createApp({
   const upiPayment = hasUpiDetails
     ? { upiId: normalizedUpiId, payeeName: normalizedPayeeName }
     : null;
+  const normalizedPushPublicKey = typeof pushPublicKey === "string" ? pushPublicKey.trim() : "";
+  const normalizedPushPrivateKey = typeof pushPrivateKey === "string" ? pushPrivateKey.trim() : "";
+  const normalizedPushSubject = typeof pushSubject === "string" ? pushSubject.trim() : "";
+  const hasPushConfiguration = Boolean(normalizedPushPublicKey || normalizedPushPrivateKey || normalizedPushSubject);
+  const publicPushKeyBytes = /^[A-Za-z0-9_-]+$/.test(normalizedPushPublicKey)
+    ? Buffer.from(normalizedPushPublicKey, "base64url")
+    : Buffer.alloc(0);
+  const privatePushKeyBytes = /^[A-Za-z0-9_-]+$/.test(normalizedPushPrivateKey)
+    ? Buffer.from(normalizedPushPrivateKey, "base64url")
+    : Buffer.alloc(0);
+  if (hasPushConfiguration &&
+      (publicPushKeyBytes.length !== 65 || publicPushKeyBytes.toString("base64url") !== normalizedPushPublicKey ||
+       privatePushKeyBytes.length !== 32 || privatePushKeyBytes.toString("base64url") !== normalizedPushPrivateKey ||
+       publicPushKeyBytes[0] !== 4 || !isValidPushSubject(normalizedPushSubject))) {
+    throw new Error("VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT must all be configured.");
+  }
+  const pushClientReady = hasPushConfiguration
+    ? webPushReady.then((webPushModule) => {
+      webPushModule.setVapidDetails(normalizedPushSubject, normalizedPushPublicKey, normalizedPushPrivateKey);
+      return webPushModule;
+    })
+    : Promise.resolve(null);
+  const pushNotificationsEnabled = hasPushConfiguration;
   let orders;
   let availability;
   let mutationQueue = Promise.resolve();
   let settingsMutationQueue = Promise.resolve();
+  let pushSubscriptions;
+  let pushSubscriptionsQueue = Promise.resolve();
   const sessions = new Map();
   const loginAttempts = new Map();
   const customerOrderLookupAttempts = new Map();
@@ -255,6 +296,18 @@ function createApp({
       availability = Object.fromEntries(Object.keys(MENU).map((id) => [id, false]));
     });
 
+  const pushSubscriptionsReady = fs.readFile(pushSubscriptionsFile, "utf8")
+    .then((contents) => {
+      pushSubscriptions = JSON.parse(contents);
+      if (!Array.isArray(pushSubscriptions)) {
+        throw new Error("Push subscriptions database must contain a JSON array.");
+      }
+    })
+    .catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+      pushSubscriptions = [];
+    });
+
   function mutateSettings(mutation) {
     const operation = settingsMutationQueue.then(async () => {
       await availabilityReady;
@@ -280,6 +333,48 @@ function createApp({
     });
     mutationQueue = operation.then(() => undefined, () => undefined);
     return operation;
+  }
+
+  function mutatePushSubscriptions(mutation) {
+    const operation = pushSubscriptionsQueue.then(async () => {
+      await pushSubscriptionsReady;
+      const result = mutation(pushSubscriptions);
+      await saveJsonAtomically(pushSubscriptionsFile, pushSubscriptions);
+      return result;
+    });
+    pushSubscriptionsQueue = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
+  async function notifyOwnerOfOrder(order) {
+    if (!pushNotificationsEnabled) return;
+    await pushSubscriptionsReady;
+    const webPush = await pushClientReady;
+    const payload = JSON.stringify({
+      title: "New order received",
+      body: `Order ${order.code} · Total ₹${order.total}`,
+      tag: `new-order-${order.code}`,
+      url: "/admin"
+    });
+    const staleEndpoints = [];
+    await Promise.all(pushSubscriptions.map(async (subscription) => {
+      try {
+        await webPush.sendNotification(subscription, payload);
+      } catch (error) {
+        if (error.statusCode === 404 || error.statusCode === 410) {
+          staleEndpoints.push(subscription.endpoint);
+        } else {
+          console.error("Could not deliver owner order notification:", error);
+        }
+      }
+    }));
+    if (staleEndpoints.length > 0) {
+      await mutatePushSubscriptions((subscriptions) => {
+        const stale = new Set(staleEndpoints);
+        subscriptions.splice(0, subscriptions.length,
+          ...subscriptions.filter((subscription) => !stale.has(subscription.endpoint)));
+      });
+    }
   }
 
   function isAdmin(request) {
@@ -326,6 +421,9 @@ function createApp({
         const order = await mutateOrders((savedOrders) => {
           savedOrders.unshift(validated.order);
           return validated.order;
+        });
+        notifyOwnerOfOrder(order).catch((error) => {
+          console.error("Could not send owner order notification:", error);
         });
         return sendJson(response, 201, {
           order: { code: order.code, total: order.total, status: order.status }
@@ -451,6 +549,55 @@ function createApp({
         return sendJson(response, 401, { error: "Please sign in to the owner dashboard." });
       }
 
+      if (request.method === "GET" && url.pathname === "/api/admin/push/config") {
+        return sendJson(response, 200, {
+          enabled: pushNotificationsEnabled,
+          publicKey: pushNotificationsEnabled ? normalizedPushPublicKey : null
+        });
+      }
+
+      if (url.pathname === "/api/admin/push/subscriptions" &&
+          (request.method === "POST" || request.method === "DELETE")) {
+        if (!pushNotificationsEnabled) {
+          return sendJson(response, 503, { error: "Owner push notifications are not configured on the server." });
+        }
+        const body = await readJsonBody(request);
+        if (!body || typeof body.endpoint !== "string") {
+          return sendJson(response, 400, { error: "A valid push subscription is required." });
+        }
+        let endpoint;
+        try {
+          endpoint = new URL(body.endpoint);
+        } catch {
+          return sendJson(response, 400, { error: "A valid push subscription is required." });
+        }
+        if (endpoint.protocol !== "https:") {
+          return sendJson(response, 400, { error: "Push subscription endpoint must use HTTPS." });
+        }
+        if (request.method === "POST") {
+          if (!body.keys || typeof body.keys.p256dh !== "string" ||
+              typeof body.keys.auth !== "string" || body.keys.p256dh.length > 200 ||
+              body.keys.auth.length > 100) {
+            return sendJson(response, 400, { error: "Push subscription keys are invalid." });
+          }
+          await mutatePushSubscriptions((subscriptions) => {
+            const existingIndex = subscriptions.findIndex((entry) => entry.endpoint === endpoint.href);
+            const subscription = {
+              endpoint: endpoint.href,
+              keys: { p256dh: body.keys.p256dh, auth: body.keys.auth }
+            };
+            if (existingIndex === -1) subscriptions.push(subscription);
+            else subscriptions[existingIndex] = subscription;
+          });
+          return sendJson(response, 201, { ok: true });
+        }
+        await mutatePushSubscriptions((subscriptions) => {
+          subscriptions.splice(0, subscriptions.length,
+            ...subscriptions.filter((entry) => entry.endpoint !== endpoint.href));
+        });
+        return sendJson(response, 200, { ok: true });
+      }
+
       if (request.method === "GET" && url.pathname === "/api/admin/orders") {
         await ordersReady;
         return sendJson(response, 200, { orders });
@@ -523,6 +670,16 @@ function createApp({
         });
       }
 
+      if (request.method === "GET" && url.pathname === "/service-worker.js") {
+        const contents = await fs.readFile(path.join(ROOT, "service-worker.js"));
+        response.writeHead(200, {
+          "Content-Type": "application/javascript; charset=utf-8",
+          "Cache-Control": "no-cache",
+          "Service-Worker-Allowed": "/"
+        });
+        return response.end(contents);
+      }
+
       if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html" || url.pathname === "/admin" || url.pathname === "/admin.html")) {
         const file = url.pathname === "/admin" || url.pathname === "/admin.html" ? "admin.html" : "index.html";
         const contents = await fs.readFile(path.join(ROOT, file));
@@ -550,6 +707,9 @@ if (require.main === module) {
     upiId: process.env.UPI_ID,
     upiPayeeName: process.env.UPI_PAYEE_NAME,
     ordersFile: process.env.ORDERS_FILE ? path.resolve(process.env.ORDERS_FILE) : undefined,
+    pushPublicKey: process.env.VAPID_PUBLIC_KEY,
+    pushPrivateKey: process.env.VAPID_PRIVATE_KEY,
+    pushSubject: process.env.VAPID_SUBJECT,
     secureCookies: process.env.NODE_ENV === "production"
   });
   server.listen(port, "0.0.0.0", () => {

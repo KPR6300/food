@@ -10,6 +10,9 @@ Requires Node.js 20 or newer. In PowerShell:
 $env:ADMIN_PASSWORD = "choose-a-unique-password-at-least-12-characters"
 $env:UPI_ID = "merchant@bank"
 $env:UPI_PAYEE_NAME = "Kitchen Name"
+$env:VAPID_PUBLIC_KEY = "generated-public-key"
+$env:VAPID_PRIVATE_KEY = "generated-private-key"
+$env:VAPID_SUBJECT = "mailto:owner@example.com"
 npm start
 ```
 
@@ -18,6 +21,8 @@ Open `http://localhost:3000` for customers and `http://localhost:3000/admin` for
 ## Owner setup
 
 Sign in to `/admin` and tick menu items that are available. Set `UPI_ID` and `UPI_PAYEE_NAME` when starting the server to enable checkout through a UPI app. All dishes start unavailable until the owner explicitly marks them available. Availability changes remain saved across server restarts.
+
+To receive order alerts while the owner device is locked, configure VAPID keys and enable **Lock-screen alerts** in the owner dashboard on each device. Generate a key pair with `npx web-push generate-vapid-keys`, set the displayed public/private keys as `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY`, and set `VAPID_SUBJECT` to a contact such as `mailto:owner@example.com`. Keep the private key secret. The site must use HTTPS (localhost is allowed for development), and the browser and operating system must permit notifications. Push subscriptions are saved in `data/push-subscriptions.json` and should be kept on persistent storage.
 
 After entering their delivery details, customers can open a UPI app with the order amount and recipient prefilled. App launching requires a compatible device. The kitchen must verify the payment in its UPI app and mark it verified in the dashboard. This site does not automatically verify payments.
 
@@ -31,7 +36,7 @@ Orders and menu availability are saved under `data/`. Keep this directory on per
 
 ## Deploy
 
-Deploy this folder to a Node.js host that supports persistent storage. On Render, add `ADMIN_PASSWORD` (at least 12 characters), `UPI_ID`, `UPI_PAYEE_NAME`, and `NODE_ENV=production` under the service's **Environment** settings, then redeploy. `UPI_ID` must be a valid UPI address and both UPI settings are required to enable checkout. Sign in to `/admin` after deploying and mark at least one menu item available; on a fresh instance, all dishes start unavailable. If the host's default disk is temporary, set `ORDERS_FILE` to a persistent disk location; menu availability is saved alongside it. Use HTTPS in production. The owner dashboard signs out when the server restarts.
+Deploy this folder to a Node.js host that supports persistent storage. On Render, add `ADMIN_PASSWORD` (at least 12 characters), `UPI_ID`, `UPI_PAYEE_NAME`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`, and `NODE_ENV=production` under the service's **Environment** settings, then redeploy. `UPI_ID` must be a valid UPI address and both UPI settings are required to enable checkout. Sign in to `/admin` after deploying and mark at least one menu item available; on a fresh instance, all dishes start unavailable. If the host's default disk is temporary, set `ORDERS_FILE` to a persistent disk location; menu availability and push subscriptions are saved alongside it. Use HTTPS in production. The owner dashboard signs out when the server restarts.
 
 UPI app payments are the only payment option. Update the menu, address, and delivery areas in `index.html` before going live.
 
