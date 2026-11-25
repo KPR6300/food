@@ -11,6 +11,8 @@
     "node": ">=20"
   },
   "dependencies": {
+    "dotenv": "^18.0.10",
+    "mysql2": "^3.24.6",
     "web-push": "^4.0.0"
   }
 }

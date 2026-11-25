@@ -5,6 +5,7 @@ const fs = require("node:fs/promises");
 const http = require("node:http");
 const path = require("node:path");
 const webPushReady = import("web-push");
+const mysql = require("mysql2/promise");
 
 const ROOT = __dirname;
 const MENU = Object.freeze({
@@ -208,6 +209,7 @@ function createApp({
   ordersFile = path.join(ROOT, "data", "orders.json"),
   availabilityFile = path.join(path.dirname(ordersFile), "menu-availability.json"),
   pushSubscriptionsFile = path.join(path.dirname(ordersFile), "push-subscriptions.json"),
+  databasePool = null,
   pushPublicKey,
   pushPrivateKey,
   pushSubject,
@@ -259,18 +261,133 @@ function createApp({
   const sessions = new Map();
   const loginAttempts = new Map();
   const customerOrderLookupAttempts = new Map();
-  const ordersReady = fs.readFile(ordersFile, "utf8")
-    .then((contents) => {
-      orders = JSON.parse(contents);
-      if (!Array.isArray(orders)) throw new Error("Order database must contain a JSON array.");
-    })
-    .catch((error) => {
-      if (error.code !== "ENOENT") throw error;
-      orders = [];
-    });
+  const databaseReady = databasePool
+    ? (async () => {
+      const connection = await databasePool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const [migrationRows] = await connection.execute(
+          "SELECT meta_value FROM app_metadata WHERE meta_key = ?",
+          ["json_storage_migration_v1"]
+        );
+        if (migrationRows.length > 0) {
+          await connection.commit();
+          return;
+        }
 
-  const availabilityReady = fs.readFile(availabilityFile, "utf8")
-    .then((contents) => {
+        const readLegacyJson = async (file) => {
+          try {
+            return JSON.parse(await fs.readFile(file, "utf8"));
+          } catch (error) {
+            if (error.code === "ENOENT") return null;
+            throw error;
+          }
+        };
+        const legacyOrders = await readLegacyJson(ordersFile);
+        if (legacyOrders !== null && !Array.isArray(legacyOrders)) {
+          throw new Error("Existing orders file must contain a JSON array before MySQL migration.");
+        }
+        const [orderCounts] = await connection.query("SELECT COUNT(*) AS count FROM orders");
+        if (orderCounts[0].count === 0 && Array.isArray(legacyOrders)) {
+          for (const order of legacyOrders) {
+            if (!order.code || !order.customer || !order.customer.phone) {
+              throw new Error("Cannot migrate an order without its code and customer phone.");
+            }
+            await connection.execute(
+              `INSERT INTO orders (order_code, customer_phone, status, payment_status, created_at, order_data)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+              [
+                order.code,
+                order.customer.phone,
+                order.status || "received",
+                order.paymentStatus || null,
+                order.createdAt || new Date().toISOString(),
+                JSON.stringify(order)
+              ]
+            );
+          }
+        }
+
+        const legacyAvailability = await readLegacyJson(availabilityFile);
+        if (legacyAvailability !== null &&
+            (!legacyAvailability || typeof legacyAvailability !== "object" || Array.isArray(legacyAvailability))) {
+          throw new Error("Existing menu availability file must contain a JSON object before MySQL migration.");
+        }
+        const [availabilityCounts] = await connection.query("SELECT COUNT(*) AS count FROM menu_availability");
+        if (availabilityCounts[0].count === 0 && legacyAvailability &&
+            typeof legacyAvailability === "object" && !Array.isArray(legacyAvailability)) {
+          if (legacyAvailability["chicken-biryani"] !== undefined &&
+              typeof legacyAvailability["chicken-biryani"] !== "boolean") {
+            throw new Error("Existing chicken-biryani availability must be true or false.");
+          }
+          for (const id of Object.keys(MENU)) {
+            if (legacyAvailability[id] !== undefined && typeof legacyAvailability[id] !== "boolean") {
+              throw new Error(`Existing availability for ${id} must be true or false.`);
+            }
+            const isLegacyBiryani = id === "chicken-biryani-full" || id === "chicken-biryani-mini";
+            const value = legacyAvailability[id] !== undefined
+              ? legacyAvailability[id]
+              : isLegacyBiryani && legacyAvailability["chicken-biryani"] === true;
+            await connection.execute(
+              "INSERT INTO menu_availability (item_id, available) VALUES (?, ?)",
+              [id, value === true]
+            );
+          }
+        }
+
+        const legacySubscriptions = await readLegacyJson(pushSubscriptionsFile);
+        if (legacySubscriptions !== null && !Array.isArray(legacySubscriptions)) {
+          throw new Error("Existing push subscriptions file must contain a JSON array before MySQL migration.");
+        }
+        const [subscriptionCounts] = await connection.query("SELECT COUNT(*) AS count FROM push_subscriptions");
+        if (subscriptionCounts[0].count === 0 && Array.isArray(legacySubscriptions)) {
+          for (const subscription of legacySubscriptions) {
+            const endpointHash = crypto.createHash("sha256").update(subscription.endpoint).digest("hex");
+            await connection.execute(
+              "INSERT INTO push_subscriptions (endpoint_hash, endpoint, p256dh, auth) VALUES (?, ?, ?, ?)",
+              [endpointHash, subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth]
+            );
+          }
+        }
+        await connection.execute(
+          "INSERT INTO app_metadata (meta_key, meta_value) VALUES (?, ?)",
+          ["json_storage_migration_v1", new Date().toISOString()]
+        );
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+    })()
+    : Promise.resolve();
+
+  const ordersReady = databasePool
+    ? databaseReady.then(() => databasePool.query("SELECT order_data FROM orders ORDER BY created_at DESC"))
+      .then(([rows]) => {
+        orders = rows.map((row) => typeof row.order_data === "string" ? JSON.parse(row.order_data) : row.order_data);
+      })
+    : fs.readFile(ordersFile, "utf8")
+      .then((contents) => {
+        orders = JSON.parse(contents);
+        if (!Array.isArray(orders)) throw new Error("Order database must contain a JSON array.");
+      })
+      .catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+        orders = [];
+      });
+
+  const availabilityReady = databasePool
+    ? databaseReady.then(() => databasePool.query("SELECT item_id, available FROM menu_availability"))
+      .then(([rows]) => {
+        availability = Object.fromEntries(Object.keys(MENU).map((id) => [id, false]));
+        for (const row of rows) {
+          if (Object.hasOwn(availability, row.item_id)) availability[row.item_id] = Boolean(row.available);
+        }
+      })
+    : fs.readFile(availabilityFile, "utf8")
+      .then((contents) => {
       const saved = JSON.parse(contents);
       if (!saved || typeof saved !== "object" || Array.isArray(saved)) {
         throw new Error("Menu availability must contain a JSON object.");
@@ -290,23 +407,37 @@ function createApp({
         }
         return [id, false];
       }));
-    })
-    .catch((error) => {
-      if (error.code !== "ENOENT") throw error;
-      availability = Object.fromEntries(Object.keys(MENU).map((id) => [id, false]));
-    });
+      })
+      .catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+        availability = Object.fromEntries(Object.keys(MENU).map((id) => [id, false]));
+      });
 
-  const pushSubscriptionsReady = fs.readFile(pushSubscriptionsFile, "utf8")
-    .then((contents) => {
+  const pushSubscriptionsReady = databasePool
+    ? databaseReady.then(() => databasePool.query("SELECT endpoint, p256dh, auth FROM push_subscriptions"))
+      .then(([rows]) => {
+        pushSubscriptions = rows.map((row) => ({
+          endpoint: row.endpoint,
+          keys: { p256dh: row.p256dh, auth: row.auth }
+        }));
+      })
+    : fs.readFile(pushSubscriptionsFile, "utf8")
+      .then((contents) => {
       pushSubscriptions = JSON.parse(contents);
       if (!Array.isArray(pushSubscriptions)) {
         throw new Error("Push subscriptions database must contain a JSON array.");
       }
-    })
-    .catch((error) => {
-      if (error.code !== "ENOENT") throw error;
-      pushSubscriptions = [];
+      })
+      .catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+        pushSubscriptions = [];
+      });
+
+  if (databasePool) {
+    Promise.all([ordersReady, availabilityReady, pushSubscriptionsReady]).catch((error) => {
+      console.error("Could not initialize MySQL storage:", error);
     });
+  }
 
   function mutateSettings(mutation) {
     const operation = settingsMutationQueue.then(async () => {
@@ -324,11 +455,58 @@ function createApp({
     await fs.rename(temporaryFile, file);
   }
 
+  async function saveOrderToDatabase(order) {
+    await databasePool.execute(
+      `INSERT INTO orders (order_code, customer_phone, status, payment_status, created_at, order_data)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE customer_phone = VALUES(customer_phone), status = VALUES(status),
+       payment_status = VALUES(payment_status), created_at = VALUES(created_at), order_data = VALUES(order_data)`,
+      [
+        order.code,
+        order.customer.phone,
+        order.status,
+        order.paymentStatus || null,
+        order.createdAt,
+        JSON.stringify(order)
+      ]
+    );
+  }
+
+  async function savePushSubscriptionsToDatabase(subscriptions) {
+    const connection = await databasePool.getConnection();
+    try {
+      await connection.beginTransaction();
+      await connection.query("DELETE FROM push_subscriptions");
+      for (const subscription of subscriptions) {
+        const endpointHash = crypto.createHash("sha256").update(subscription.endpoint).digest("hex");
+        await connection.execute(
+          "INSERT INTO push_subscriptions (endpoint_hash, endpoint, p256dh, auth) VALUES (?, ?, ?, ?)",
+          [endpointHash, subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth]
+        );
+      }
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
   function mutateOrders(mutation) {
     const operation = mutationQueue.then(async () => {
       await ordersReady;
-      const result = mutation(orders);
-      await saveJsonAtomically(ordersFile, orders);
+      const updatedOrders = structuredClone(orders);
+      const result = mutation(updatedOrders);
+      const changedOrder = result && result.order
+        ? result.order
+        : result && typeof result.code === "string" ? result : null;
+      if (databasePool) {
+        if (changedOrder) await saveOrderToDatabase(changedOrder);
+      } else {
+        await saveJsonAtomically(ordersFile, updatedOrders);
+      }
+      orders = updatedOrders;
       return result;
     });
     mutationQueue = operation.then(() => undefined, () => undefined);
@@ -338,8 +516,17 @@ function createApp({
   function mutatePushSubscriptions(mutation) {
     const operation = pushSubscriptionsQueue.then(async () => {
       await pushSubscriptionsReady;
-      const result = mutation(pushSubscriptions);
-      await saveJsonAtomically(pushSubscriptionsFile, pushSubscriptions);
+      const updatedSubscriptions = pushSubscriptions.map((subscription) => ({
+        ...subscription,
+        keys: { ...subscription.keys }
+      }));
+      const result = mutation(updatedSubscriptions);
+      if (databasePool) {
+        await savePushSubscriptionsToDatabase(updatedSubscriptions);
+      } else {
+        await saveJsonAtomically(pushSubscriptionsFile, updatedSubscriptions);
+      }
+      pushSubscriptions = updatedSubscriptions;
       return result;
     });
     pushSubscriptionsQueue = operation.then(() => undefined, () => undefined);
@@ -506,7 +693,7 @@ function createApp({
           if (order.rating) return { error: "This order has already been rated.", status: 409 };
           order.rating = { stars, comment, createdAt: new Date().toISOString() };
           order.updatedAt = order.rating.createdAt;
-          return { rating: order.rating };
+          return { rating: order.rating, order };
         });
         if (result.error) return sendJson(response, result.status, { error: result.error });
         return sendJson(response, 201, { rating: result.rating });
@@ -624,7 +811,14 @@ function createApp({
         }
         const item = await mutateSettings(async () => {
           const next = { ...availability, [id]: body.available };
-          await saveJsonAtomically(availabilityFile, next);
+          if (databasePool) {
+            await databasePool.execute(
+              "INSERT INTO menu_availability (item_id, available) VALUES (?, ?) ON DUPLICATE KEY UPDATE available = VALUES(available)",
+              [id, body.available]
+            );
+          } else {
+            await saveJsonAtomically(availabilityFile, next);
+          }
           availability = next;
           return { id, available: next[id] };
         });
@@ -701,7 +895,29 @@ function createApp({
 }
 
 if (require.main === module) {
+  require("dotenv").config();
   const port = Number(process.env.PORT) || 3000;
+  const hasMysqlSettings = Boolean(
+    process.env.MYSQL_HOST || process.env.MYSQL_DATABASE ||
+    process.env.MYSQL_USER || process.env.MYSQL_PASSWORD
+  );
+  if (hasMysqlSettings &&
+      (!process.env.MYSQL_HOST || !process.env.MYSQL_DATABASE || !process.env.MYSQL_USER)) {
+    throw new Error("Set MYSQL_HOST, MYSQL_DATABASE, and MYSQL_USER to enable MySQL storage.");
+  }
+  const databasePool = hasMysqlSettings
+    ? mysql.createPool({
+      host: process.env.MYSQL_HOST,
+      port: Number(process.env.MYSQL_PORT) || 3306,
+      database: process.env.MYSQL_DATABASE,
+      user: process.env.MYSQL_USER,
+      password: process.env.MYSQL_PASSWORD || "",
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+      timezone: "Z"
+    })
+    : null;
   const server = createApp({
     adminPassword: process.env.ADMIN_PASSWORD,
     upiId: process.env.UPI_ID,
@@ -710,8 +926,14 @@ if (require.main === module) {
     pushPublicKey: process.env.VAPID_PUBLIC_KEY,
     pushPrivateKey: process.env.VAPID_PRIVATE_KEY,
     pushSubject: process.env.VAPID_SUBJECT,
+    databasePool,
     secureCookies: process.env.NODE_ENV === "production"
   });
+  if (databasePool) {
+    server.on("close", () => {
+      databasePool.end().catch((error) => console.error("Could not close the MySQL pool:", error));
+    });
+  }
   server.listen(port, "0.0.0.0", () => {
     console.log(`Cloud kitchen site listening on port ${port}`);
     console.log(`Owner dashboard: http://localhost:${port}/admin`);
